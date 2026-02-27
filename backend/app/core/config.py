@@ -1,32 +1,37 @@
-from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parents[2]  # backend/
-ENV_PATH = BASE_DIR / ".env"
-
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=str(ENV_PATH),
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-    # Required
-    openai_api_key: str
-    database_url: str
-
-    # Optional
-    app_name: str = "PaperBridge"
     debug: bool = False
-
+    
+    api_env: str = "local"
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    
+    openai_api_key: str = ""
     chat_model: str = "gpt-4o-mini"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    openai_embed_model: str = "text-embedding-3-small"
+    openai_embed_dims: int = 1536
+    
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_storage_bucket: str = "paperbridge-documents"
+    
+    database_url: str = ""
+    
+    max_upload_mb: int = 25
+    max_pages: int = 200
+    
+    chunk_size_tokens: int = 800
+    chunk_overlap_tokens: int = 120
+    rag_top_k: int = 6
+    
+    llm_retries: int = 2
+    llm_timeout_s: int = 45
 
-    chunk_size_tokens: int = 300
-    chunk_overlap_tokens: int = 50
-    rag_top_k: int = 5
-
-    max_extraction_retries: int = 3
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 settings = Settings()

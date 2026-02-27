@@ -1,25 +1,39 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .core.startup import load_settings
-from .routers import health
+from contextlib import asynccontextmanager
+from app.core.logging import logger
 
-def create_app() -> FastAPI:
-    _settings = load_settings()  # validates immediately
-    return FastAPI(title=_settings.app_name)
+from app.routers import health_router, documents_router, jobs_router, extract_router, embed_router, ask_router, review_router, export_router
 
-app = create_app()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting up PaperBridge backend...")
+    yield
+    # Shutdown
+    logger.info("Shutting down PaperBridge backend...")
+
+app = FastAPI(
+    title="PaperBridge API",
+    description="Production-ready AI internal tool for document intelligence.",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # noinspection PyTypeChecker
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def initFn():
-    return {"status": "ok"}
-
-app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
+app.include_router(health_router)
+app.include_router(documents_router)
+app.include_router(jobs_router)
+app.include_router(extract_router)
+app.include_router(embed_router)
+app.include_router(ask_router)
+app.include_router(review_router)
+app.include_router(export_router)
