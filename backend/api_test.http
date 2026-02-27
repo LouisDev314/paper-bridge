@@ -1,0 +1,100 @@
+@baseUrl = http://localhost:8000
+@documentId = 11111111-1111-1111-1111-111111111111
+@jobId = 22222222-2222-2222-2222-222222222222
+@extractionId = 33333333-3333-3333-3333-333333333333
+
+###
+### Health check
+###
+GET {{baseUrl}}/health
+
+###
+### Upload a PDF document
+### Note: adjust the boundary and file path as needed.
+###
+POST {{baseUrl}}/documents
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< /absolute/path/to/sample.pdf
+--WebAppBoundary--
+
+###
+### List all documents
+###
+GET {{baseUrl}}/documents
+
+###
+### Get a single document by ID
+###
+GET {{baseUrl}}/documents/{{documentId}}
+
+###
+### Trigger extraction job for a document
+###
+POST {{baseUrl}}/documents/{{documentId}}/extract
+
+###
+### Trigger embedding job for a document
+###
+POST {{baseUrl}}/documents/{{documentId}}/embed
+
+###
+### Get job status by ID
+###
+GET {{baseUrl}}/jobs/{{jobId}}
+
+###
+### Ask a question about a document
+###
+POST {{baseUrl}}/documents/{{documentId}}/ask
+Content-Type: application/json
+
+{
+  "question": "What is the total amount on this document?"
+}
+
+###
+### Submit a review for an extraction
+### You must provide a real extractionId from the database.
+###
+POST {{baseUrl}}/extractions/{{extractionId}}/review
+Content-Type: application/json
+
+{
+  "updated_data": {
+    "document_type": "Invoice",
+    "date_issued": "2024-01-01T00:00:00Z",
+    "issuer": "Example Corp",
+    "recipient": "Customer Inc",
+    "part_numbers": ["ABC-123"],
+    "total_amount": 123.45,
+    "currency": "USD",
+    "line_items": [
+      {
+        "description": "Item 1",
+        "quantity": 1,
+        "unit_price": 123.45,
+        "total": 123.45
+      }
+    ],
+    "summary": "Sample updated extraction summary.",
+    "confidence": 0.9,
+    "extraction_notes": "Manually corrected totals."
+  },
+  "edited_by": "reviewer@example.com"
+}
+
+###
+### Export latest extraction as JSON
+###
+GET {{baseUrl}}/documents/{{documentId}}/export.json
+
+###
+### Export latest extraction as CSV
+###
+GET {{baseUrl}}/documents/{{documentId}}/export.csv
+
