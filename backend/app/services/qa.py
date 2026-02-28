@@ -9,18 +9,27 @@ openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 async def answer_question(question: str, chunks: List[Embedding]) -> AskResponse:
     logger.info("Generating answer with GPT-4o-mini...")
-    
-    context_text = "\n\n---\n\n".join(
-        [f"Chunk ID: {c.chunk_id}\nPage: {c.page_start}-{c.page_end}\nContent:\n{c.content}" for c in chunks]
+
+    context_text = "\n\n=== EVIDENCE ===\n\n".join(
+        [
+            (
+                f"Document ID: {c.document_id}\n"
+                f"Pages: {c.page_start}-{c.page_end}\n"
+                f"Chunk ID: {c.chunk_id}\n"
+                f"Content:\n{c.content}"
+            )
+            for c in chunks
+        ]
     )
-    
+
     messages = [
         {
             "role": "system", 
             "content": (
                 "You are an assistant answering questions based solely on the provided context. "
-                "Do NOT hallucinate or use outside knowledge. If the answer is not in the context, say 'I cannot answer this based on the provided document'. "
-                "You MUST cite the page numbers in your answer when referencing facts."
+                "Do not hallucinate or use outside knowledge. "
+                "If the answer is not in the context, say 'I cannot answer this based on the provided documents'. "
+                "When referencing facts, include citations with BOTH Document ID and page range."
             )
         },
         {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {question}"}
@@ -29,7 +38,8 @@ async def answer_question(question: str, chunks: List[Embedding]) -> AskResponse
     response = await openai_client.chat.completions.create(
         model=settings.chat_model,
         messages=messages,
-        max_tokens=1000
+        temperature=0,
+        max_tokens=1000,
     )
     
     answer = response.choices[0].message.content or ""
@@ -37,6 +47,7 @@ async def answer_question(question: str, chunks: List[Embedding]) -> AskResponse
     citations = [
         Citation(
             chunk_id=c.chunk_id,
+            document_id=c.document_id,
             page_start=c.page_start,
             page_end=c.page_end,
             text=c.content
