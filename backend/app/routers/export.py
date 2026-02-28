@@ -8,10 +8,15 @@ import io
 
 from app.db.database import get_db
 from app.db.models import Document, Extraction
+from app.schemas.api import ErrorResponse
 
 router = APIRouter(tags=["export"])
 
-@router.get("/documents/{document_id}/export.json")
+@router.get(
+    "/documents/{document_id}/export.json",
+    summary="Export latest extraction as JSON",
+    responses={404: {"model": ErrorResponse, "description": "Document or extraction not found"}},
+)
 async def export_json(document_id: UUID, db: AsyncSession = Depends(get_db)):
     doc = await db.get(Document, document_id)
     if not doc:
@@ -25,7 +30,11 @@ async def export_json(document_id: UUID, db: AsyncSession = Depends(get_db)):
         
     return JSONResponse(content=extraction.data)
 
-@router.get("/documents/{document_id}/export.csv")
+@router.get(
+    "/documents/{document_id}/export.csv",
+    summary="Export latest extraction as CSV",
+    responses={404: {"model": ErrorResponse, "description": "Document or extraction not found"}},
+)
 async def export_csv(document_id: UUID, db: AsyncSession = Depends(get_db)):
     doc = await db.get(Document, document_id)
     if not doc:

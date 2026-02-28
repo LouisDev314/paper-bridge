@@ -43,8 +43,11 @@ CREATE TABLE IF NOT EXISTS review_edits (
     extraction_id UUID NOT NULL REFERENCES extractions(id) ON DELETE CASCADE,
     original_data JSONB NOT NULL,
     updated_data JSONB NOT NULL,
+    edited_by VARCHAR,
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE review_edits ADD COLUMN IF NOT EXISTS edited_by VARCHAR;
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -60,6 +63,8 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE INDEX IF NOT EXISTS ix_jobs_document_id_status ON jobs (document_id, status);
 CREATE INDEX IF NOT EXISTS ix_document_pages_document_id_page ON document_pages (document_id, page_number);
 CREATE INDEX IF NOT EXISTS ix_extractions_document_id ON extractions (document_id);
+CREATE INDEX IF NOT EXISTS ix_embeddings_document_id ON embeddings (document_id);
+CREATE INDEX IF NOT EXISTS ix_embeddings_document_chunk ON embeddings (document_id, chunk_id);
 
 -- IVFFlat index for cosine distance. This requires some data to be perfectly optimal, but we will create it here.
 CREATE INDEX IF NOT EXISTS ix_embeddings_embedding ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);

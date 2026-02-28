@@ -1,9 +1,18 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.logging import logger
-from sqlalchemy import select
-from app.db.models import Embedding
-from app.core.config import settings
+from dataclasses import dataclass
 from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.logging import logger
+from app.db.models import Embedding
+
+
+@dataclass
+class RetrievedChunk:
+    embedding: Embedding
+    distance: float | None
 
 
 async def retrieve_chunks(
@@ -12,20 +21,16 @@ async def retrieve_chunks(
     document_ids: list[UUID] | None = None,
     top_k: int = settings.rag_top_k,
 ):
-    logger.info(f"Retrieving top {top_k} chunks")
+    logger.info("Retrieving top %s chunks", top_k)
 
-    q = select(Embedding)
+    distance = Embedding.embedding.cosine_distance(question_embedding).label("distance")
+    q = select(Embedding, distance)
 
-    # Using vector_cosine_ops or cosine_distance function from pgvector
-    # smaller distance is closer
-    # optional filter by a set of document_ids (still multi-doc)
     if document_ids:
-        q = q.where(Embedding.document_id.in_([str(doc_id) for doc_id in document_ids]))
+        q = q.where(Embedding.document_id.in_(document_ids))
 
-    q = (
-        q.order_by(Embedding.embedding.cosine_distance(question_embedding))
-         .limit(top_k)
-    )
+    q = q.order_by(distance).limit(top_k)
 
     res = await db.execute(q)
-    return res.scalars().all()
+    rows = res.all()
+    return [RetrievedChunk(embedding=row[0], distance=row[1]) for row in rows]

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict
 from uuid import UUID
 from datetime import datetime
@@ -27,3 +27,13 @@ class JobResponse(BaseModel):
 class ExportResponse(BaseModel):
     data: Dict[str, Any]
     status: str
+
+
+class ErrorDetail(BaseModel):
+    code: str = Field(description="Machine-readable error code")
+    message: str = Field(description="Human-readable error message")
+    request_id: Optional[str] = Field(default=None, description="Request correlation ID")
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorDetail

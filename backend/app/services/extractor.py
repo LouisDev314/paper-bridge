@@ -1,13 +1,18 @@
 import instructor
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
+
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.extraction import ExtractionSchema
 
 # Setup instructor with async client
 client = instructor.from_openai(
-    AsyncOpenAI(api_key=settings.openai_api_key),
+    AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout_s,
+        max_retries=settings.llm_retries,
+    ),
     mode=instructor.Mode.TOOLS
 )
 
@@ -17,7 +22,7 @@ client = instructor.from_openai(
     reraise=True
 )
 async def extract_document_features(text: str) -> ExtractionSchema:
-    logger.info("Extracting data via Instructor...")
+    logger.info("Extracting data via Instructor")
     try:
         extraction = await client.chat.completions.create(
             model=settings.chat_model,
@@ -29,6 +34,6 @@ async def extract_document_features(text: str) -> ExtractionSchema:
             ]
         )
         return extraction
-    except Exception as e:
-        logger.error(f"Instructor extraction failed: {e}")
+    except Exception as exc:
+        logger.error("instructor_extraction_failed error=%s", exc)
         raise

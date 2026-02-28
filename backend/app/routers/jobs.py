@@ -4,11 +4,16 @@ from uuid import UUID
 
 from app.db.database import get_db
 from app.db.models import Job
-from app.schemas.api import JobResponse
+from app.schemas.api import ErrorResponse, JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-@router.get("/{job_id}", response_model=JobResponse)
+@router.get(
+    "/{job_id}",
+    response_model=JobResponse,
+    summary="Get job status",
+    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+)
 async def get_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
     job = await db.get(Job, job_id)
     if not job:

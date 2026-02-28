@@ -12,6 +12,7 @@ class ReviewEditResponse(BaseModel):
     extraction_id: UUID
     original_data: Dict[str, Any]
     updated_data: Dict[str, Any]
+    edited_by: Optional[str] = None
     created_at: datetime
 
     class Config:

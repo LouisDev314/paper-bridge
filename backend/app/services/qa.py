@@ -1,24 +1,30 @@
+from typing import List
+
 from openai import AsyncOpenAI
+
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.qa import AskResponse, Citation
-from typing import List
-from app.db.models import Embedding
+from app.services.retriever import RetrievedChunk
 
-openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+openai_client = AsyncOpenAI(
+    api_key=settings.openai_api_key,
+    timeout=settings.llm_timeout_s,
+    max_retries=settings.llm_retries,
+)
 
-async def answer_question(question: str, chunks: List[Embedding]) -> AskResponse:
-    logger.info("Generating answer with GPT-4o-mini...")
+async def answer_question(question: str, chunks: List[RetrievedChunk]) -> AskResponse:
+    logger.info("Generating answer for question with %s evidence chunks", len(chunks))
 
     context_text = "\n\n=== EVIDENCE ===\n\n".join(
         [
             (
-                f"Document ID: {c.document_id}\n"
-                f"Pages: {c.page_start}-{c.page_end}\n"
-                f"Chunk ID: {c.chunk_id}\n"
-                f"Content:\n{c.content}"
+                f"Document ID: {chunk.embedding.document_id}\n"
+                f"Pages: {chunk.embedding.page_start}-{chunk.embedding.page_end}\n"
+                f"Chunk ID: {chunk.embedding.chunk_id}\n"
+                f"Content:\n{chunk.embedding.content}"
             )
-            for c in chunks
+            for chunk in chunks
         ]
     )
 
@@ -46,12 +52,14 @@ async def answer_question(question: str, chunks: List[Embedding]) -> AskResponse
     
     citations = [
         Citation(
-            chunk_id=c.chunk_id,
-            document_id=c.document_id,
-            page_start=c.page_start,
-            page_end=c.page_end,
-            text=c.content
-        ) for c in chunks
+            chunk_id=chunk.embedding.chunk_id,
+            document_id=chunk.embedding.document_id,
+            page_start=chunk.embedding.page_start,
+            page_end=chunk.embedding.page_end,
+            text=chunk.embedding.content,
+            similarity_score=(1 - chunk.distance) if chunk.distance is not None else None,
+        )
+        for chunk in chunks
     ]
     
     return AskResponse(answer=answer, citations=citations)

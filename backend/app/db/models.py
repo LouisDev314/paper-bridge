@@ -4,6 +4,7 @@ from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Enu
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
+from app.core.config import settings
 from app.db.database import Base
 
 class Document(Base):
@@ -59,6 +60,7 @@ class ReviewEdit(Base):
     extraction_id = Column(UUID(as_uuid=True), ForeignKey('extractions.id'), nullable=False)
     original_data = Column(JSONB, nullable=False)
     updated_data = Column(JSONB, nullable=False)
+    edited_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     extraction = relationship("Extraction", back_populates="review_edits")
@@ -71,6 +73,6 @@ class Embedding(Base):
     page_start = Column(Integer, nullable=False)
     page_end = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(1536), nullable=False)
+    embedding = Column(Vector(settings.openai_embed_dims), nullable=False)
 
     document = relationship("Document")
