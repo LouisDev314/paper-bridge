@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from openai import AsyncOpenAI
 
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.logging import get_request_id, logger
 from app.services.supabase_storage import storage_service
 
 LOW_TEXT_THRESHOLD = 100
@@ -75,6 +75,8 @@ async def parse_pdf(file_bytes: bytes, document_id: str):
     Parse PDF into pages. Returns list of dictionaries containing page data.
     dict: page_number, text, text_quality_score, page_image_key
     """
+    request_id = get_request_id()
+    logger.info("parse_pdf_start request_id=%s document_id=%s", request_id, document_id)
     total_pages, pages_data = await run_in_threadpool(_extract_pages_sync, file_bytes)
 
     if total_pages > settings.max_pages:
@@ -87,9 +89,11 @@ async def parse_pdf(file_bytes: bytes, document_id: str):
 
         page_number = page_data["page_number"]
         logger.info(
-            "vision_fallback page=%s document_id=%s reason=low_text",
+            "vision_fallback request_id=%s page=%s document_id=%s reason=low_text model=%s",
+            request_id,
             page_number,
             document_id,
+            settings.chat_model,
         )
         vision_text = await _extract_text_via_vision(image_bytes)
         if vision_text.strip():
@@ -104,4 +108,5 @@ async def parse_pdf(file_bytes: bytes, document_id: str):
         )
         page_data["page_image_key"] = page_image_key
 
+    logger.info("parse_pdf_complete request_id=%s document_id=%s total_pages=%s", request_id, document_id, total_pages)
     return total_pages, pages_data

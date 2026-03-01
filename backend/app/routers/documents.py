@@ -1,17 +1,19 @@
+import hashlib
 import re
 from pathlib import Path
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.logging import logger
 from app.db.database import get_db
 from app.db.models import Document, DocumentPage
-from app.core.logging import logger
 from app.schemas.api import DocumentResponse, ErrorResponse
 from app.services.pdf_parser import parse_pdf
 from app.services.supabase_storage import storage_service
@@ -25,6 +27,10 @@ UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 def _safe_filename(filename: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name)
     return cleaned[:180] or "document.pdf"
+
+
+def _compute_checksum(file_bytes: bytes) -> str:
+    return hashlib.sha256(file_bytes).hexdigest()
 
 
 async def _read_upload_bytes(upload: UploadFile, max_bytes: int) -> bytes:
@@ -49,7 +55,16 @@ async def _read_upload_bytes(upload: UploadFile, max_bytes: int) -> bytes:
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def upload_document(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    dedupe: bool = Query(
+        default=True,
+        description="If true, returns the existing document when this exact file checksum already exists.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    request_id = getattr(request.state, "request_id", None)
     filename = file.filename or ""
     safe_name = _safe_filename(filename)
     if not safe_name.lower().endswith(".pdf"):
@@ -59,42 +74,92 @@ async def upload_document(file: UploadFile = File(...), db: AsyncSession = Depen
 
     max_bytes = settings.max_upload_mb * 1024 * 1024
     file_bytes = await _read_upload_bytes(file, max_bytes=max_bytes)
+    checksum_sha256 = _compute_checksum(file_bytes)
 
-    doc = Document(filename=safe_name, storage_key="")
+    existing_doc = (
+        await db.execute(
+            select(Document)
+            .where(Document.checksum_sha256 == checksum_sha256)
+            .order_by(Document.version.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+    if dedupe and existing_doc:
+        logger.info(
+            "upload_deduped request_id=%s checksum=%s existing_document_id=%s version=%s",
+            request_id,
+            checksum_sha256,
+            existing_doc.id,
+            existing_doc.version,
+        )
+        await file.close()
+        return existing_doc
+
+    version = 1
+    if existing_doc:
+        version = int(existing_doc.version) + 1
+
+    doc = Document(filename=safe_name, storage_key="", checksum_sha256=checksum_sha256, version=version)
     db.add(doc)
     await db.flush()
 
-    storage_key = f"{doc.id}/{safe_name}"
-    await run_in_threadpool(storage_service.upload_file, file_bytes, storage_key, "application/pdf")
-    doc.storage_key = storage_key
+    storage_key = f"documents/{checksum_sha256[:16]}/v{version}/{safe_name}"
+    file_uploaded = False
 
     try:
+        logger.info(
+            "upload_start request_id=%s document_id=%s checksum=%s version=%s storage_key=%s",
+            request_id,
+            doc.id,
+            checksum_sha256,
+            version,
+            storage_key,
+        )
+        await run_in_threadpool(storage_service.upload_file, file_bytes, storage_key, "application/pdf")
+        file_uploaded = True
+        doc.storage_key = storage_key
+
         total_pages, pages_data = await parse_pdf(file_bytes, str(doc.id))
         doc.total_pages = total_pages
 
         for pd in pages_data:
-            page = DocumentPage(
-                document_id=doc.id,
-                page_number=pd["page_number"],
-                text=pd["text"],
-                text_quality_score=pd["text_quality_score"],
-                page_image_key=pd["page_image_key"]
+            db.add(
+                DocumentPage(
+                    document_id=doc.id,
+                    page_number=pd["page_number"],
+                    text=pd["text"],
+                    text_quality_score=pd["text_quality_score"],
+                    page_image_key=pd["page_image_key"],
+                )
             )
-            db.add(page)
     except ValueError as exc:
         await db.rollback()
-        logger.warning("upload_rejected document_id=%s reason=%s", doc.id, exc)
+        if file_uploaded:
+            await run_in_threadpool(storage_service.delete_files, [storage_key])
+        logger.warning("upload_rejected request_id=%s document_id=%s reason=%s", request_id, doc.id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         await db.rollback()
-        logger.error("document_upload_failed document_id=%s error=%s", doc.id, exc)
+        if file_uploaded:
+            await run_in_threadpool(storage_service.delete_files, [storage_key])
+        logger.exception("document_upload_failed request_id=%s document_id=%s error=%s", request_id, doc.id, exc)
         raise HTTPException(status_code=500, detail="Failed to parse PDF document.") from exc
     finally:
         await file.close()
 
     await db.commit()
     await db.refresh(doc)
+    logger.info(
+        "upload_complete request_id=%s document_id=%s total_pages=%s checksum=%s version=%s",
+        request_id,
+        doc.id,
+        doc.total_pages,
+        doc.checksum_sha256,
+        doc.version,
+    )
     return doc
+
 
 @router.get("/documents", response_model=List[DocumentResponse], summary="List uploaded documents")
 async def list_documents(
@@ -102,13 +167,9 @@ async def list_documents(
     limit: int = Query(default=50, ge=1, le=200, description="Page size."),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Document)
-        .order_by(Document.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
+    result = await db.execute(select(Document).order_by(Document.created_at.desc()).offset(skip).limit(limit))
     return result.scalars().all()
+
 
 @router.get(
     "/documents/{document_id}",
@@ -121,3 +182,38 @@ async def get_document(document_id: UUID, db: AsyncSession = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+
+@router.delete(
+    "/documents/{document_id}",
+    status_code=204,
+    response_class=Response,
+    summary="Delete a document and all dependent rows (pages/jobs/extractions/embeddings)",
+    responses={404: {"model": ErrorResponse, "description": "Document not found"}},
+)
+async def delete_document(document_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    request_id = getattr(request.state, "request_id", None)
+    doc = (
+        await db.execute(
+            select(Document).options(selectinload(Document.pages)).where(Document.id == document_id)
+        )
+    ).scalars().first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    storage_paths = [doc.storage_key] + [p.page_image_key for p in doc.pages if p.page_image_key]
+    if storage_paths:
+        try:
+            await run_in_threadpool(storage_service.delete_files, storage_paths)
+        except Exception as exc:
+            logger.warning(
+                "document_delete_storage_cleanup_failed request_id=%s document_id=%s error=%s",
+                request_id,
+                document_id,
+                exc,
+            )
+
+    await db.delete(doc)
+    await db.commit()
+    logger.info("document_deleted request_id=%s document_id=%s", request_id, document_id)
+    return Response(status_code=204)

@@ -26,7 +26,7 @@ class AskRequest(BaseModel):
         validation_alias=AliasChoices("doc_ids", "document_ids"),
         description="Optional list of document IDs to scope retrieval. If omitted, searches all embedded documents.",
     )
-    top_k: Optional[int] = Field(default=None, ge=1, le=25)
+    top_k: Optional[int] = Field(default=None, ge=1, le=50)
 
     @field_validator("doc_ids")
     @classmethod
@@ -40,6 +40,8 @@ class Citation(BaseModel):
     document_id: UUID
     page_start: int
     page_end: int
+    pdf_page_start: int
+    pdf_page_end: int
     text: str
     similarity_score: Optional[float] = None
 

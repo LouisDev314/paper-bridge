@@ -2,7 +2,7 @@ import time
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from uuid import UUID
 
 from app.core.config import settings
@@ -27,6 +27,7 @@ async def run_embed_job(job_id: UUID):
 
         started_at = time.perf_counter()
         try:
+            logger.info("embed_job_started job_id=%s document_id=%s", job_id, job.document_id)
             result = await db.execute(
                 select(DocumentPage)
                 .where(DocumentPage.document_id == job.document_id)
@@ -37,19 +38,32 @@ async def run_embed_job(job_id: UUID):
             if not pages:
                 raise ValueError("No parsed pages found. Upload and parse the document before embedding.")
 
-            all_chunks = []
+            all_chunks: list[dict] = []
             for page in pages:
                 if not page.text:
                     continue
                 page_chunks = chunk_text(page.text)
-                for i, c in enumerate(page_chunks):
+                for i, chunk in enumerate(page_chunks):
                     all_chunks.append({
                         "chunk_id": f"p{page.page_number}-c{i}",
                         "page_start": page.page_number,
                         "page_end": page.page_number,
-                        "content": c
+                        "pdf_page_start": page.page_number,
+                        "pdf_page_end": page.page_number,
+                        "content": chunk.content,
+                        "token_count": chunk.approx_tokens,
                     })
-            
+
+            logger.info(
+                "chunking_complete job_id=%s document_id=%s pages=%s chunks=%s chunk_size_tokens=%s overlap_tokens=%s",
+                job_id,
+                job.document_id,
+                len(pages),
+                len(all_chunks),
+                settings.chunk_size_tokens,
+                settings.chunk_overlap_tokens,
+            )
+
             if not all_chunks:
                 job.status = "done"
                 await db.commit()
@@ -60,18 +74,31 @@ async def run_embed_job(job_id: UUID):
             batch_size = settings.embedding_batch_size
             for i in range(0, len(texts), batch_size):
                 batch_texts = texts[i:i+batch_size]
-                batch_embeddings = await generate_embeddings(batch_texts)
+                batch_embeddings = await generate_embeddings(batch_texts, request_id=str(job_id))
 
+                rows_to_insert = []
                 for j, emb in enumerate(batch_embeddings):
-                    chunk_meta = all_chunks[i+j]
-                    db.add(Embedding(
-                        document_id=job.document_id,
-                        chunk_id=chunk_meta["chunk_id"],
-                        page_start=chunk_meta["page_start"],
-                        page_end=chunk_meta["page_end"],
-                        content=chunk_meta["content"],
-                        embedding=emb
-                    ))
+                    chunk_meta = all_chunks[i + j]
+                    rows_to_insert.append(
+                        {
+                            "document_id": job.document_id,
+                            "chunk_id": chunk_meta["chunk_id"],
+                            "page_start": chunk_meta["page_start"],
+                            "page_end": chunk_meta["page_end"],
+                            "pdf_page_start": chunk_meta["pdf_page_start"],
+                            "pdf_page_end": chunk_meta["pdf_page_end"],
+                            "content": chunk_meta["content"],
+                            "embedding": emb,
+                        }
+                    )
+                await db.execute(insert(Embedding), rows_to_insert)
+                logger.info(
+                    "embedding_batch_inserted job_id=%s batch_start=%s batch_size=%s embedding_model=%s",
+                    job_id,
+                    i,
+                    len(rows_to_insert),
+                    settings.openai_embed_model,
+                )
 
             job.status = "done"
             await db.commit()
@@ -84,13 +111,13 @@ async def run_embed_job(job_id: UUID):
             )
 
         except Exception as exc:
-            logger.error("embed_job_failed job_id=%s error=%s", job_id, exc)
+            logger.exception("embed_job_failed job_id=%s error=%s", job_id, exc)
             await db.rollback()
             job = await db.get(Job, job_id)
             if not job:
                 return
             job.status = "failed"
-            job.error_message = "Embedding job failed."
+            job.error_message = f"Embedding job failed: {exc}"
             await db.commit()
 
 @router.post(

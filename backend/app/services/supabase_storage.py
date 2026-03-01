@@ -28,7 +28,7 @@ class SupabaseStorage:
             self._get_client().storage.from_(self.bucket).upload(
                 path=destination_key,
                 file=file_bytes,
-                file_options={"content-type": content_type}
+                file_options={"content-type": content_type, "upsert": "false"},
             )
             return destination_key
         except Exception as exc:
@@ -42,6 +42,16 @@ class SupabaseStorage:
             return self._get_client().storage.from_(self.bucket).download(file_key)
         except Exception as exc:
             logger.error("failed_to_download file_key=%s error=%s", file_key, exc)
+            raise
+
+    def delete_files(self, file_keys: list[str]) -> None:
+        if not file_keys:
+            return
+        logger.info("Deleting %s files from %s", len(file_keys), self.bucket)
+        try:
+            self._get_client().storage.from_(self.bucket).remove(file_keys)
+        except Exception as exc:
+            logger.error("failed_to_delete file_keys=%s error=%s", file_keys, exc)
             raise
 
 storage_service = SupabaseStorage()

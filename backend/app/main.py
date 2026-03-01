@@ -8,10 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.logging import logger, set_request_id
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.schemas.api import ErrorResponse
 
 from app.routers import health_router, documents_router, jobs_router, extract_router, embed_router, ask_router, review_router, export_router
+
+ask_rate_limiter = SlidingWindowRateLimiter(settings.ask_rate_limit_per_minute, window_seconds=60)
+upload_rate_limiter = SlidingWindowRateLimiter(settings.upload_rate_limit_per_minute, window_seconds=60)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,31 +56,59 @@ app.add_middleware(
 async def request_context_middleware(request: Request, call_next):
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     request.state.request_id = request_id
+    set_request_id(request_id)
     start = time.perf_counter()
     try:
-        response = await call_next(request)
-    except Exception:
+        client_host = request.client.host if request.client else "unknown"
+        if request.method == "POST" and request.url.path == "/ask":
+            allowed, retry_after = await ask_rate_limiter.allow(client_host)
+            if not allowed:
+                payload = ErrorResponse(
+                    error={
+                        "code": "rate_limited",
+                        "message": "Ask rate limit exceeded. Please retry later.",
+                        "request_id": request_id,
+                    }
+                ).model_dump()
+                return JSONResponse(status_code=429, content=payload, headers={"Retry-After": str(retry_after)})
+        if request.method == "POST" and request.url.path == "/documents":
+            allowed, retry_after = await upload_rate_limiter.allow(client_host)
+            if not allowed:
+                payload = ErrorResponse(
+                    error={
+                        "code": "rate_limited",
+                        "message": "Upload rate limit exceeded. Please retry later.",
+                        "request_id": request_id,
+                    }
+                ).model_dump()
+                return JSONResponse(status_code=429, content=payload, headers={"Retry-After": str(retry_after)})
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                "request_failed request_id=%s method=%s path=%s duration_ms=%.2f",
+                request_id,
+                request.method,
+                request.url.path,
+                duration_ms,
+            )
+            raise
+
         duration_ms = (time.perf_counter() - start) * 1000
-        logger.exception(
-            "request_failed request_id=%s method=%s path=%s duration_ms=%.2f",
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request_completed request_id=%s method=%s path=%s status_code=%s duration_ms=%.2f",
             request_id,
             request.method,
             request.url.path,
+            response.status_code,
             duration_ms,
         )
-        raise
-
-    duration_ms = (time.perf_counter() - start) * 1000
-    response.headers["X-Request-ID"] = request_id
-    logger.info(
-        "request_completed request_id=%s method=%s path=%s status_code=%s duration_ms=%.2f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        duration_ms,
-    )
-    return response
+        return response
+    finally:
+        set_request_id(None)
 
 
 @app.exception_handler(HTTPException)

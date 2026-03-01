@@ -6,6 +6,8 @@ from datetime import datetime
 class DocumentResponse(BaseModel):
     id: UUID
     filename: str
+    checksum_sha256: str
+    version: int
     total_pages: int
     created_at: datetime
 
