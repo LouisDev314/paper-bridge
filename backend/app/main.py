@@ -71,7 +71,7 @@ async def request_context_middleware(request: Request, call_next):
                     }
                 ).model_dump()
                 return JSONResponse(status_code=429, content=payload, headers={"Retry-After": str(retry_after)})
-        if request.method == "POST" and request.url.path == "/documents":
+        if request.method == "POST" and request.url.path in {"/documents", "/documents/batch"}:
             allowed, retry_after = await upload_rate_limiter.allow(client_host)
             if not allowed:
                 payload = ErrorResponse(

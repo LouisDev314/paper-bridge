@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     task_type VARCHAR NOT NULL,
     status VARCHAR DEFAULT 'queued',
     error_message TEXT,
+    task_metadata JSONB,
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -80,6 +81,8 @@ UPDATE embeddings SET pdf_page_start = page_start WHERE pdf_page_start IS NULL;
 UPDATE embeddings SET pdf_page_end = page_end WHERE pdf_page_end IS NULL;
 ALTER TABLE embeddings ALTER COLUMN pdf_page_start SET NOT NULL;
 ALTER TABLE embeddings ALTER COLUMN pdf_page_end SET NOT NULL;
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS task_metadata JSONB;
 
 -- Indexes and constraints
 CREATE INDEX IF NOT EXISTS ix_jobs_document_id_status ON jobs (document_id, status);

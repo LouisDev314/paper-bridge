@@ -14,12 +14,18 @@ class DocumentResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class UploadDocumentResponse(DocumentResponse):
+    pipeline_job_id: Optional[UUID] = None
+
+
 class JobResponse(BaseModel):
     id: UUID
     document_id: UUID
     task_type: str
     status: str
     error_message: Optional[str]
+    task_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 

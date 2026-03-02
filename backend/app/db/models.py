@@ -28,6 +28,7 @@ class Job(Base):
     task_type = Column(String, nullable=False) # e.g., 'extract', 'embed'
     status = Column(String, default="queued") # queued | processing | needs_review | done | failed
     error_message = Column(Text, nullable=True)
+    task_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -1,6 +1,6 @@
 import time
 
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
@@ -61,13 +61,13 @@ async def run_extraction_job(job_id: UUID):
             )
 
         except Exception as exc:
-            logger.error("extract_job_failed job_id=%s error=%s", job_id, exc)
+            logger.error("extract_job_failed job_id=%s document_id=%s error=%s", job_id, job.document_id, exc)
             await db.rollback()
             job = await db.get(Job, job_id)
             if not job:
                 return
             job.status = "failed"
-            job.error_message = "Extraction job failed."
+            job.error_message = f"Extraction job failed: {exc}"
             await db.commit()
 
 @router.post(
@@ -79,7 +79,13 @@ async def run_extraction_job(job_id: UUID):
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def trigger_extraction(document_id: UUID, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def trigger_extraction(
+    document_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    request_id = getattr(request.state, "request_id", None)
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -91,6 +97,13 @@ async def trigger_extraction(document_id: UUID, background_tasks: BackgroundTask
     )
     running = existing.scalars().first()
     if running:
+        logger.info(
+            "extract_job_reused request_id=%s document_id=%s job_id=%s status=%s",
+            request_id,
+            document_id,
+            running.id,
+            running.status,
+        )
         return running
 
     job = Job(document_id=document_id, task_type="extract", status="queued")
@@ -98,5 +111,11 @@ async def trigger_extraction(document_id: UUID, background_tasks: BackgroundTask
     await db.commit()
     await db.refresh(job)
 
+    logger.info(
+        "extract_job_queued request_id=%s document_id=%s job_id=%s",
+        request_id,
+        document_id,
+        job.id,
+    )
     background_tasks.add_task(run_extraction_job, job.id)
     return job

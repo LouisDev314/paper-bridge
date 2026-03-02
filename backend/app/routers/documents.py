@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,7 +14,8 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.db.database import get_db
 from app.db.models import Document, DocumentPage
-from app.schemas.api import DocumentResponse, ErrorResponse
+from app.schemas.api import DocumentResponse, ErrorResponse, UploadDocumentResponse
+from app.services.pipeline import ensure_pipeline_job, run_pipeline_job
 from app.services.pdf_parser import parse_pdf
 from app.services.supabase_storage import storage_service
 
@@ -45,31 +46,42 @@ async def _read_upload_bytes(upload: UploadFile, max_bytes: int) -> bytes:
     return bytes(data)
 
 
-@router.post(
-    "/documents",
-    response_model=DocumentResponse,
-    summary="Upload a PDF and parse its pages",
-    responses={
-        400: {"model": ErrorResponse, "description": "Invalid file type or payload"},
-        413: {"model": ErrorResponse, "description": "File too large"},
-        500: {"model": ErrorResponse, "description": "Internal server error"},
-    },
-)
-async def upload_document(
-    request: Request,
-    file: UploadFile = File(...),
-    dedupe: bool = Query(
-        default=True,
-        description="If true, returns the existing document when this exact file checksum already exists.",
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    request_id = getattr(request.state, "request_id", None)
+def _to_upload_response(document: Document, pipeline_job_id: UUID | None = None) -> UploadDocumentResponse:
+    payload = UploadDocumentResponse.model_validate(document)
+    payload.pipeline_job_id = pipeline_job_id
+    return payload
+
+
+async def _queue_pipeline_if_requested(
+    *,
+    request_id: str | None,
+    document_id: UUID,
+    auto_process: bool,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+) -> UUID | None:
+    if not auto_process:
+        return None
+    pipeline_job = await ensure_pipeline_job(document_id=document_id, db=db, request_id=request_id)
+    if pipeline_job.status == "queued":
+        background_tasks.add_task(run_pipeline_job, pipeline_job.id, request_id)
+    return pipeline_job.id
+
+
+async def _ingest_pdf_upload(
+    *,
+    request_id: str | None,
+    file: UploadFile,
+    dedupe: bool,
+    db: AsyncSession,
+) -> Document:
     filename = file.filename or ""
     safe_name = _safe_filename(filename)
     if not safe_name.lower().endswith(".pdf"):
+        await file.close()
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
     if file.content_type and file.content_type.lower() not in ALLOWED_PDF_CONTENT_TYPES:
+        await file.close()
         raise HTTPException(status_code=400, detail="Unsupported content type for PDF upload.")
 
     max_bytes = settings.max_upload_mb * 1024 * 1024
@@ -159,6 +171,84 @@ async def upload_document(
         doc.version,
     )
     return doc
+
+
+@router.post(
+    "/documents",
+    response_model=UploadDocumentResponse,
+    summary="Upload a PDF and parse its pages",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid file type or payload"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
+)
+async def upload_document(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    dedupe: bool = Query(
+        default=True,
+        description="If true, returns the existing document when this exact file checksum already exists.",
+    ),
+    auto_process: bool = Query(
+        default=False,
+        description="If true, automatically orchestrates extract then embed as a pipeline job.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    request_id = getattr(request.state, "request_id", None)
+    document = await _ingest_pdf_upload(request_id=request_id, file=file, dedupe=dedupe, db=db)
+    pipeline_job_id = await _queue_pipeline_if_requested(
+        request_id=request_id,
+        document_id=document.id,
+        auto_process=auto_process,
+        background_tasks=background_tasks,
+        db=db,
+    )
+    return _to_upload_response(document, pipeline_job_id)
+
+
+@router.post(
+    "/documents/batch",
+    response_model=List[UploadDocumentResponse],
+    summary="Upload multiple PDFs and parse pages",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid file type or payload"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
+)
+async def batch_upload_documents(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    dedupe: bool = Query(
+        default=True,
+        description="If true, returns the existing document when an exact file checksum already exists.",
+    ),
+    auto_process: bool = Query(
+        default=False,
+        description="If true, automatically orchestrates extract then embed for each uploaded document.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    request_id = getattr(request.state, "request_id", None)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files were uploaded.")
+
+    responses: list[UploadDocumentResponse] = []
+    for upload in files:
+        document = await _ingest_pdf_upload(request_id=request_id, file=upload, dedupe=dedupe, db=db)
+        pipeline_job_id = await _queue_pipeline_if_requested(
+            request_id=request_id,
+            document_id=document.id,
+            auto_process=auto_process,
+            background_tasks=background_tasks,
+            db=db,
+        )
+        responses.append(_to_upload_response(document, pipeline_job_id))
+    return responses
 
 
 @router.get("/documents", response_model=List[DocumentResponse], summary="List uploaded documents")
