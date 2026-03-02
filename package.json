@@ -3,11 +3,11 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "dev": "pnpm --filter web dev",
-    "lint": "pnpm --filter web lint",
-    "typecheck": "pnpm --filter web typecheck",
+    "dev": "pnpm -r dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter web test",
     "test:e2e": "pnpm --filter web test:e2e",
-    "build": "pnpm --filter web build"
+    "build": "pnpm -r build"
   }
 }
