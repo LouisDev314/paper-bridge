@@ -1,4 +1,20 @@
-import type { AskResponse, DocumentResponse, HealthResponse, JobResponse, ReviewEditResponse } from "@/lib/types";
+import { z } from "zod";
+
+import {
+  AskResponseSchema,
+  DocumentResponseSchema,
+  ErrorResponseSchema,
+  HealthResponseSchema,
+  JobResponseSchema,
+  ReviewEditResponseSchema,
+  UploadDocumentResponseSchema,
+  type AskResponse,
+  type DocumentResponse,
+  type HealthResponse,
+  type JobResponse,
+  type ReviewEditResponse,
+  type UploadDocumentResponse,
+} from "@/lib/types";
 
 const API_PREFIX = "/api/pb";
 
@@ -32,22 +48,17 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
     return payload;
   }
 
-  if (typeof payload === "object") {
-    const asRecord = payload as Record<string, unknown>;
-    if (typeof asRecord.detail === "string") {
-      return asRecord.detail;
-    }
-
-    const error = asRecord.error;
-    if (error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string") {
-      return (error as Record<string, string>).message;
-    }
+  const parsed = ErrorResponseSchema.safeParse(payload);
+  if (parsed.success) {
+    if (parsed.data.detail) return parsed.data.detail;
+    if (parsed.data.error?.message) return parsed.data.error.message;
+    if (parsed.data.message) return parsed.data.message;
   }
 
   return fallback;
 }
 
-async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function apiRequest<T>(path: string, init: RequestInit = {}, schema?: z.ZodType<T>): Promise<T> {
   const response = await fetch(buildApiPath(path), {
     ...init,
     cache: "no-store",
@@ -57,7 +68,27 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!response.ok) {
     const fallback = `Request failed (${response.status})`;
-    throw new Error(extractErrorMessage(payload, fallback));
+    const errorMessage = extractErrorMessage(payload, fallback);
+
+    // Attempt to parse request_id from standard error
+    let requestId = "";
+    if (payload && typeof payload === "object") {
+      const parsed = ErrorResponseSchema.safeParse(payload);
+      if (parsed.success && parsed.data.request_id) {
+        requestId = ` [ReqID: ${parsed.data.request_id}]`;
+      }
+    }
+
+    throw new Error(`${errorMessage}${requestId}`);
+  }
+
+  if (schema && payload !== undefined) {
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) {
+      console.error("API response validation failed:", path, parsed.error);
+      throw new Error(`Invalid API response from ${path}`);
+    }
+    return parsed.data;
   }
 
   return payload as T;
@@ -74,43 +105,51 @@ function jsonInit(method: string, body?: JsonBody): RequestInit {
 }
 
 export async function getHealth(): Promise<HealthResponse> {
-  return apiRequest<HealthResponse>("/health");
+  return apiRequest<HealthResponse>("/health", {}, HealthResponseSchema);
 }
 
 export async function listDocuments(skip = 0, limit = 20): Promise<DocumentResponse[]> {
   const params = new URLSearchParams({ skip: String(skip), limit: String(limit) });
-  return apiRequest<DocumentResponse[]>(`/documents?${params.toString()}`);
+  return apiRequest<DocumentResponse[]>(`/documents?${params.toString()}`, {}, z.array(DocumentResponseSchema));
 }
 
 export async function getDocument(documentId: string): Promise<DocumentResponse> {
-  return apiRequest<DocumentResponse>(`/documents/${encodeURIComponent(documentId)}`);
+  return apiRequest<DocumentResponse>(`/documents/${encodeURIComponent(documentId)}`, {}, DocumentResponseSchema);
 }
 
-export async function uploadDocument(file: File, dedupe = true, autoProcess = false): Promise<DocumentResponse> {
+export async function uploadDocument(file: File, dedupe = true, autoProcess = false): Promise<UploadDocumentResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
   const params = new URLSearchParams({ dedupe: String(dedupe), auto_process: String(autoProcess) });
-  return apiRequest<DocumentResponse>(`/documents?${params.toString()}`, {
-    method: "POST",
-    body: formData,
-  });
+  return apiRequest<UploadDocumentResponse>(
+    `/documents?${params.toString()}`,
+    {
+      method: "POST",
+      body: formData,
+    },
+    UploadDocumentResponseSchema,
+  );
 }
 
 export async function uploadDocumentsBatch(
   files: File[],
   dedupe = true,
   autoProcess = false,
-): Promise<DocumentResponse[]> {
+): Promise<UploadDocumentResponse[]> {
   const formData = new FormData();
   for (const file of files) {
     formData.append("files", file);
   }
   const params = new URLSearchParams({ dedupe: String(dedupe), auto_process: String(autoProcess) });
-  return apiRequest<DocumentResponse[]>(`/documents/batch?${params.toString()}`, {
-    method: "POST",
-    body: formData,
-  });
+  return apiRequest<UploadDocumentResponse[]>(
+    `/documents/batch?${params.toString()}`,
+    {
+      method: "POST",
+      body: formData,
+    },
+    z.array(UploadDocumentResponseSchema),
+  );
 }
 
 export async function deleteDocument(documentId: string): Promise<void> {
@@ -120,19 +159,27 @@ export async function deleteDocument(documentId: string): Promise<void> {
 }
 
 export async function triggerExtract(documentId: string): Promise<JobResponse> {
-  return apiRequest<JobResponse>(`/documents/${encodeURIComponent(documentId)}/extract`, {
-    method: "POST",
-  });
+  return apiRequest<JobResponse>(
+    `/documents/${encodeURIComponent(documentId)}/extract`,
+    {
+      method: "POST",
+    },
+    JobResponseSchema,
+  );
 }
 
 export async function triggerEmbed(documentId: string): Promise<JobResponse> {
-  return apiRequest<JobResponse>(`/documents/${encodeURIComponent(documentId)}/embed`, {
-    method: "POST",
-  });
+  return apiRequest<JobResponse>(
+    `/documents/${encodeURIComponent(documentId)}/embed`,
+    {
+      method: "POST",
+    },
+    JobResponseSchema,
+  );
 }
 
 export async function getJob(jobId: string): Promise<JobResponse> {
-  return apiRequest<JobResponse>(`/jobs/${encodeURIComponent(jobId)}`);
+  return apiRequest<JobResponse>(`/jobs/${encodeURIComponent(jobId)}`, {}, JobResponseSchema);
 }
 
 export async function askQuestion(question: string, docIds?: string[], topK?: number): Promise<AskResponse> {
@@ -142,13 +189,16 @@ export async function askQuestion(question: string, docIds?: string[], topK?: nu
 
   if (docIds && docIds.length > 0) {
     body.doc_ids = docIds;
+  } else if (docIds && docIds.length === 0) {
+    // Specifically handle the case where we want all documents according to backend
+    body.doc_ids = null;
   }
 
   if (typeof topK === "number" && Number.isFinite(topK)) {
     body.top_k = topK;
   }
 
-  return apiRequest<AskResponse>("/ask", jsonInit("POST", body));
+  return apiRequest<AskResponse>("/ask", jsonInit("POST", body), AskResponseSchema);
 }
 
 export async function submitExtractionReview(
@@ -156,12 +206,16 @@ export async function submitExtractionReview(
   updatedData: Record<string, unknown>,
   editedBy?: string,
 ): Promise<ReviewEditResponse> {
-  return apiRequest<ReviewEditResponse>(`/extractions/${encodeURIComponent(extractionId)}/review`, {
-    ...jsonInit("POST", {
-      updated_data: updatedData,
-      edited_by: editedBy ?? null,
-    }),
-  });
+  return apiRequest<ReviewEditResponse>(
+    `/extractions/${encodeURIComponent(extractionId)}/review`,
+    {
+      ...jsonInit("POST", {
+        updated_data: updatedData,
+        edited_by: editedBy ?? null,
+      }),
+    },
+    ReviewEditResponseSchema,
+  );
 }
 
 export function getExportUrl(documentId: string, format: "json" | "csv"): string {

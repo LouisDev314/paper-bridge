@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
+import { ConfirmModal } from "@/components/confirm-modal";
 import { JobList } from "@/components/job-list";
 import { useJobs } from "@/components/providers/job-provider";
-import { getHealth, listDocuments, triggerEmbed, triggerExtract, uploadDocument } from "@/lib/api";
+import { deleteDocument, getHealth, listDocuments, triggerEmbed, triggerExtract, uploadDocumentsBatch } from "@/lib/api";
 import type { DocumentResponse } from "@/lib/types";
 
 const RECENT_LIMIT = 8;
@@ -13,6 +15,7 @@ const RECENT_LIMIT = 8;
 type TaskType = "extract" | "embed";
 
 export default function DashboardPage() {
+  const router = useRouter();
   const { jobs, registerJob } = useJobs();
   const [health, setHealth] = useState<string>("checking");
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -20,7 +23,11 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dedupe, setDedupe] = useState(true);
+  const [autoProcess, setAutoProcess] = useState(true);
   const [runningAction, setRunningAction] = useState<string | null>(null);
+
+  const [deleteCandidate, setDeleteCandidate] = useState<DocumentResponse | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const recentJobs = useMemo(() => jobs.slice(0, 8), [jobs]);
 
@@ -59,12 +66,26 @@ export default function DashboardPage() {
 
     try {
       setUploading(true);
-      for (const file of Array.from(files)) {
-        await uploadDocument(file, dedupe);
-      }
+      const responses = await uploadDocumentsBatch(Array.from(files), dedupe, autoProcess);
+
       form.reset();
       setDedupe(true);
-      await refresh();
+      setAutoProcess(true);
+
+      const batchItems = responses
+        .filter((r) => r.pipeline_job_id)
+        .map((r) => ({
+          docId: r.id,
+          jobId: r.pipeline_job_id as string,
+          filename: r.filename,
+        }));
+
+      if (autoProcess && batchItems.length > 0) {
+        sessionStorage.setItem("processing_batch", JSON.stringify(batchItems));
+        router.push("/processing");
+      } else {
+        await refresh();
+      }
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
     } finally {
@@ -88,7 +109,27 @@ export default function DashboardPage() {
     }
   }
 
-  const healthClass = health === "ok" ? "status status-ok" : health === "checking" ? "status status-neutral" : "status status-bad";
+  async function confirmDelete() {
+    if (!deleteCandidate) {
+      return;
+    }
+
+    setDeleting(true);
+    setError(null);
+
+    try {
+      await deleteDocument(deleteCandidate.id);
+      setDeleteCandidate(null);
+      await refresh();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete document.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const healthClass =
+    health === "ok" ? "status status-ok" : health === "checking" ? "status status-neutral" : "status status-bad";
 
   return (
     <section className="page-grid">
@@ -103,18 +144,32 @@ export default function DashboardPage() {
 
         <form className="form-stack" onSubmit={handleUpload}>
           <label className="form-label" htmlFor="pdfs">
-            Upload PDFs
+            Upload PDFs (Batch)
           </label>
-          <input id="pdfs" name="pdfs" type="file" accept="application/pdf" multiple />
+          <input
+            id="pdfs"
+            name="pdfs"
+            type="file"
+            accept="application/pdf"
+            multiple
+            className="border border-dashed p-4 text-center cursor-pointer"
+          />
 
-          <label className="inline-row">
-            <input
-              type="checkbox"
-              checked={dedupe}
-              onChange={(event) => setDedupe(event.currentTarget.checked)}
-            />
-            <span>Enable checksum dedupe</span>
-          </label>
+          <div className="inline-row spread">
+            <label className="inline-row">
+              <input type="checkbox" checked={dedupe} onChange={(event) => setDedupe(event.currentTarget.checked)} />
+              <span>Enable checksum dedupe</span>
+            </label>
+
+            <label className="inline-row">
+              <input
+                type="checkbox"
+                checked={autoProcess}
+                onChange={(event) => setAutoProcess(event.currentTarget.checked)}
+              />
+              <span>Auto-process pipeline</span>
+            </label>
+          </div>
 
           <div className="button-row">
             <button className="primary-button" type="submit" disabled={uploading}>
@@ -147,7 +202,6 @@ export default function DashboardPage() {
               <tr>
                 <th>Filename</th>
                 <th>Pages</th>
-                <th>Version</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
@@ -162,10 +216,12 @@ export default function DashboardPage() {
                       <Link href={`/documents/${document.id}`}>{document.filename}</Link>
                     </td>
                     <td>{document.total_pages}</td>
-                    <td>{document.version}</td>
-                    <td>{new Date(document.created_at).toLocaleString()}</td>
+                    <td>{new Date(document.created_at).toLocaleDateString()}</td>
                     <td>
                       <div className="button-row wrap">
+                        <Link href={`/documents/${document.id}`} className="small-button">
+                          View
+                        </Link>
                         <button
                           type="button"
                           className="small-button"
@@ -182,6 +238,13 @@ export default function DashboardPage() {
                         >
                           {runningAction === embedKey ? "Queuing..." : "Embed"}
                         </button>
+                        <button
+                          type="button"
+                          className="danger-button small-button"
+                          onClick={() => setDeleteCandidate(document)}
+                        >
+                          Delete
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -196,6 +259,19 @@ export default function DashboardPage() {
         <h2>Recent jobs</h2>
         <JobList jobs={recentJobs} emptyMessage="No jobs have been queued from this browser yet." />
       </div>
+
+      <ConfirmModal
+        open={Boolean(deleteCandidate)}
+        title="Delete document"
+        message={
+          deleteCandidate
+            ? `Delete '${deleteCandidate.filename}' and all related records?`
+            : ""
+        }
+        busy={deleting}
+        onCancel={() => setDeleteCandidate(null)}
+        onConfirm={() => void confirmDelete()}
+      />
     </section>
   );
 }

@@ -36,6 +36,9 @@ function copyRequestHeaders(request: NextRequest): Headers {
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
+  if (!headers.has("x-request-id")) {
+    headers.set("x-request-id", crypto.randomUUID());
+  }
   return headers;
 }
 

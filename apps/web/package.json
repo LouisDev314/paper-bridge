@@ -12,6 +12,7 @@
     "test:e2e": "node -e \"console.log('No frontend e2e tests configured')\""
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.21",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",

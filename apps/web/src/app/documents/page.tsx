@@ -21,9 +21,7 @@ export default function DocumentsPage() {
   const [runningAction, setRunningAction] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DocumentResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
-
-  const canPrev = skip > 0;
-  const canNext = documents.length === PAGE_SIZE;
+  const [searchQuery, setSearchQuery] = useState("");
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -82,6 +80,16 @@ export default function DocumentsPage() {
     return `Page ${pageNumber}`;
   }, [skip]);
 
+  const filteredDocuments = useMemo(() => {
+    if (!searchQuery.trim()) return documents;
+    const lowerQuery = searchQuery.toLowerCase();
+    return documents.filter((doc) => doc.filename.toLowerCase().includes(lowerQuery));
+  }, [documents, searchQuery]);
+
+  // Next/prev button logic shouldn't count filtered docs because backend pagination is active
+  const canPrev = skip > 0;
+  const canNext = documents.length === PAGE_SIZE;
+
   return (
     <section className="page-grid">
       <div className="panel">
@@ -94,14 +102,24 @@ export default function DocumentsPage() {
 
         <p className="muted">Browse uploaded files, queue processing jobs, and delete records.</p>
 
-        {error ? <p className="error-text">{error}</p> : null}
+        <div className="top-gap">
+          <input
+            type="search"
+            placeholder="Search by filename..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.currentTarget.value)}
+            className="w-full flex-1 max-w-sm"
+          />
+        </div>
 
-        {loading ? <p className="muted">Loading documents...</p> : null}
+        {error ? <p className="error-text top-gap">{error}</p> : null}
 
-        {!loading && documents.length === 0 ? <p className="muted">No documents found for this page.</p> : null}
+        {loading ? <p className="muted top-gap">Loading documents...</p> : null}
 
-        {!loading && documents.length > 0 ? (
-          <table className="data-table">
+        {!loading && filteredDocuments.length === 0 ? <p className="muted top-gap">No documents found.</p> : null}
+
+        {!loading && filteredDocuments.length > 0 ? (
+          <table className="data-table top-gap full-width">
             <thead>
               <tr>
                 <th>Filename</th>
@@ -112,7 +130,7 @@ export default function DocumentsPage() {
               </tr>
             </thead>
             <tbody>
-              {documents.map((document) => {
+              {filteredDocuments.map((document) => {
                 const extractKey = `${document.id}:extract`;
                 const embedKey = `${document.id}:embed`;
 
@@ -123,7 +141,7 @@ export default function DocumentsPage() {
                     </td>
                     <td>{document.total_pages}</td>
                     <td>{document.version}</td>
-                    <td>{new Date(document.created_at).toLocaleString()}</td>
+                    <td>{new Date(document.created_at).toLocaleDateString()}</td>
                     <td>
                       <div className="button-row wrap">
                         <button
@@ -142,7 +160,7 @@ export default function DocumentsPage() {
                         >
                           {runningAction === embedKey ? "Queuing..." : "Embed"}
                         </button>
-                        <button type="button" className="danger-button" onClick={() => setDeleteCandidate(document)}>
+                        <button type="button" className="danger-button small-button" onClick={() => setDeleteCandidate(document)}>
                           Delete
                         </button>
                       </div>

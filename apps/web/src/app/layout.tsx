@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { Navigation } from "@/components/navigation";
 import { JobProvider } from "@/components/providers/job-provider";
+import { QueryProvider } from "@/components/providers/query-provider";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
@@ -13,12 +14,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body>
-        <JobProvider>
-          <div className="app-shell">
-            <Navigation />
-            <main className="main-shell">{children}</main>
-          </div>
-        </JobProvider>
+        <QueryProvider>
+          <JobProvider>
+            <div className="app-shell">
+              <Navigation />
+              <main className="main-shell">{children}</main>
+            </div>
+          </JobProvider>
+        </QueryProvider>
       </body>
     </html>
   );
