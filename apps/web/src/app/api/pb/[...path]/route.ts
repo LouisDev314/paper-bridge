@@ -1,54 +1,76 @@
-import type { NextRequest } from "next/server";
+import type { NextRequest } from 'next/server';
+import crypto from 'crypto';
 
-import { getServerEnv } from "@/lib/env";
+import { getServerEnv } from '@/lib/env';
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
 ]);
+
+// Headers that commonly trigger browser decoding failures when proxying through Vercel
+const STRIP_RESPONSE_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding']);
 
 type ProxyContext = {
   params: Promise<{ path?: string[] }> | { path?: string[] };
 };
 
 function stripTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
+  return value.replace(/\/+$/, '');
 }
 
 function makeTargetUrl(path: string[], search: string): URL {
   const { NEXT_PUBLIC_API_BASE_URL } = getServerEnv();
   const base = stripTrailingSlashes(NEXT_PUBLIC_API_BASE_URL);
-  const target = new URL(`${base}/${path.map((segment) => encodeURIComponent(segment)).join("/")}`);
+
+  // Keep original behavior: encode each segment safely
+  const target = new URL(`${base}/${path.map((segment) => encodeURIComponent(segment)).join('/')}`);
   target.search = search;
   return target;
 }
 
 function copyRequestHeaders(request: NextRequest): Headers {
   const headers = new Headers(request.headers);
-  headers.delete("host");
-  headers.delete("content-length");
-  if (!headers.has("x-request-id")) {
-    headers.set("x-request-id", crypto.randomUUID());
+
+  // Don't forward host/content-length; let fetch compute it
+  headers.delete('host');
+  headers.delete('content-length');
+  headers.delete('connection');
+
+  // Prevent upstream compression to avoid Vercel/body decoding mismatches
+  headers.set('accept-encoding', 'identity');
+
+  if (!headers.has('x-request-id')) {
+    headers.set('x-request-id', crypto.randomUUID());
   }
+
   return headers;
 }
 
 function copyResponseHeaders(upstream: Response): Headers {
   const headers = new Headers();
+
   upstream.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
-      headers.set(key, value);
-    }
+    const lower = key.toLowerCase();
+
+    // Remove hop-by-hop headers
+    if (HOP_BY_HOP_HEADERS.has(lower)) return;
+
+    // Remove headers that can cause ERR_CONTENT_DECODING_FAILED
+    if (STRIP_RESPONSE_HEADERS.has(lower)) return;
+
+    headers.set(key, value);
   });
+
   return headers;
 }
 
@@ -60,8 +82,8 @@ async function proxyRequest(request: NextRequest, context: ProxyContext): Promis
     return Response.json(
       {
         error: {
-          code: "INVALID_PROXY_PATH",
-          message: "Missing backend path for proxy request.",
+          code: 'INVALID_PROXY_PATH',
+          message: 'Missing backend path for proxy request.',
         },
       },
       { status: 400 },
@@ -71,19 +93,22 @@ async function proxyRequest(request: NextRequest, context: ProxyContext): Promis
   const targetUrl = makeTargetUrl(path, request.nextUrl.search);
   const requestHeaders = copyRequestHeaders(request);
 
-  const init: RequestInit & { duplex?: "half" } = {
+  const init: RequestInit & { duplex?: 'half' } = {
     method: request.method,
     headers: requestHeaders,
-    redirect: "manual",
+    redirect: 'manual',
   };
 
-  if (!["GET", "HEAD"].includes(request.method.toUpperCase())) {
+  const method = request.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    // Stream body through (supports multipart uploads)
     init.body = request.body;
-    init.duplex = "half";
+    init.duplex = 'half';
   }
 
   try {
     const upstream = await fetch(targetUrl, init);
+
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -93,8 +118,8 @@ async function proxyRequest(request: NextRequest, context: ProxyContext): Promis
     return Response.json(
       {
         error: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "Unable to reach backend API from proxy route.",
+          code: 'UPSTREAM_UNAVAILABLE',
+          message: 'Unable to reach backend API from proxy route.',
         },
       },
       { status: 502 },
