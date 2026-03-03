@@ -126,7 +126,7 @@ function AskPageContent() {
           />
 
           <button type="submit" className="primary-button top-gap w-fit" disabled={asking}>
-            {asking ? "Asking..." : "Ask"}
+            {asking ? 'Asking...' : 'Ask'}
           </button>
         </form>
 
@@ -137,18 +137,18 @@ function AskPageContent() {
         <div className="inline-row spread border-b pb-4 mb-4">
           <h2>Document scope</h2>
           <span className="bg-slate-100 px-3 py-1 rounded-full text-sm font-medium">
-            {selectableDocumentIds.length === 0 ? "All ready documents" : `${selectableDocumentIds.length} selected`}
+            {selectableDocumentIds.length === 0 ? 'All ready documents' : `${selectableDocumentIds.length} selected`}
           </span>
         </div>
 
-        <label className="flex items-center space-x-2 p-3 bg-slate-50 border rounded-lg mb-4 cursor-pointer hover:bg-slate-100 transition-colors">
+        <label className="flex items-center gap-2 p-3 bg-slate-50 border rounded-lg mb-4 cursor-pointer hover:bg-slate-100 transition-colors">
+          <span className="font-medium text-slate-900">All ready documents</span>
           <input
             type="checkbox"
             checked={selectableDocumentIds.length === 0}
             onChange={(event) => toggleAllDocuments(event.target.checked)}
             className="w-4 h-4 text-blue-600"
           />
-          <span className="font-medium text-slate-900">All ready documents</span>
         </label>
 
         {loadingDocs ? <p className="text-slate-500 animate-pulse">Loading documents...</p> : null}
@@ -158,15 +158,14 @@ function AskPageContent() {
         {!loadingDocs && documents.length > 0 ? (
           <ul className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
             {documents.map((document) => {
-              const ready = document.status === "ready";
+              const ready = document.status === 'ready';
               const createdDate = new Date(document.created_at).toLocaleString();
               return (
                 <li key={document.id}>
                   <label
                     className={`flex items-start space-x-3 p-3 border rounded-lg transition-colors ${
-                      ready ? "cursor-pointer hover:bg-slate-50" : "cursor-not-allowed bg-slate-50"
-                    }`}
-                  >
+                      ready ? 'cursor-pointer hover:bg-slate-50' : 'cursor-not-allowed bg-slate-50'
+                    }`}>
                     <input
                       type="checkbox"
                       checked={selectableDocumentIds.includes(document.id)}
@@ -198,16 +197,14 @@ function AskPageContent() {
               <button
                 type="button"
                 onClick={copyAnswer}
-                className="px-3 py-1.5 text-sm rounded bg-slate-100 hover:bg-slate-200 transition-colors"
-              >
-                {copiedAnswer ? "Copied!" : "Copy Answer"}
+                className="px-3 py-1.5 text-sm rounded bg-slate-100 hover:bg-slate-200 transition-colors">
+                {copiedAnswer ? 'Copied!' : 'Copy Answer'}
               </button>
               <button
                 type="button"
                 onClick={copyMarkdown}
-                className="px-3 py-1.5 text-sm rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
-              >
-                {copiedMarkdown ? "Copied!" : "Copy Markdown"}
+                className="px-3 py-1.5 text-sm rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors">
+                {copiedMarkdown ? 'Copied!' : 'Copy Markdown'}
               </button>
             </div>
           </div>

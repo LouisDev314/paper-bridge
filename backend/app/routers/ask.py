@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.logging import logger
-from app.db.database import get_db
-from app.schemas.api import ErrorResponse
-from app.schemas.qa import AskRequest, AskResponse
-from app.services.document_status import ready_document_ids
-from app.services.embedder import generate_embeddings
-from app.services.retriever import RetrievedChunk, retrieve_chunks
-from app.services.qa import answer_question
+from ...app.core.config import settings
+from ...app.core.logging import logger
+from ...app.db.database import get_db
+from ...app.schemas.api import ErrorResponse
+from ...app.schemas.qa import AskRequest, AskResponse
+from ...app.services.document_status import ready_document_ids
+from ...app.services.embedder import generate_embeddings
+from ...app.services.retriever import RetrievedChunk, retrieve_chunks
+from ...app.services.qa import answer_question
 
 router = APIRouter(tags=["ask"])
 

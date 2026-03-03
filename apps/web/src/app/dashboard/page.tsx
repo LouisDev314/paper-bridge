@@ -133,7 +133,7 @@ export default function DashboardPage() {
         <p className="muted">Upload PDFs and monitor processing to readiness for Ask.</p>
 
         <div className="inline-row">
-          <span>API health</span>
+          <span>Server health</span>
           <span className={healthClass}>{health}</span>
         </div>
 
