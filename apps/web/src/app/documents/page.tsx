@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ConfirmModal } from "@/components/confirm-modal";
-import { deleteDocument, listDocuments } from "@/lib/api";
+import { deleteDocument, getDocumentDownload, listDocuments } from "@/lib/api";
 import type { DocumentResponse } from "@/lib/types";
 
 const PAGE_SIZE = 12;
@@ -23,6 +23,7 @@ export default function DocumentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DocumentResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
   const loadDocuments = useCallback(async () => {
@@ -58,6 +59,19 @@ export default function DocumentsPage() {
       setError(deleteError instanceof Error ? deleteError.message : "Failed to delete document.");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function downloadDocumentFile(document: DocumentResponse) {
+    setError(null);
+    setDownloadingId(document.id);
+    try {
+      const { url } = await getDocumentDownload(document.id);
+      window.location.assign(url);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Failed to download document.");
+    } finally {
+      setDownloadingId(null);
     }
   }
 
@@ -128,13 +142,23 @@ export default function DocumentsPage() {
                   </td>
                   <td>{new Date(document.created_at).toLocaleDateString()}</td>
                   <td>
-                    <button
-                      type="button"
-                      className="danger-button small-button"
-                      onClick={() => setDeleteCandidate(document)}
-                    >
-                      Delete
-                    </button>
+                    <div className="button-row wrap">
+                      <button
+                        type="button"
+                        className="secondary-button small-button"
+                        onClick={() => void downloadDocumentFile(document)}
+                        disabled={downloadingId === document.id}
+                      >
+                        Download
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-button small-button"
+                        onClick={() => setDeleteCandidate(document)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

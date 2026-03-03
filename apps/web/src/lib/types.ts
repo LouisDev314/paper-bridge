@@ -21,6 +21,12 @@ export const UploadDocumentResponseSchema = DocumentResponseSchema.extend({
 });
 export type UploadDocumentResponse = z.infer<typeof UploadDocumentResponseSchema>;
 
+export const DownloadDocumentResponseSchema = z.object({
+  url: z.string().min(1),
+  filename: z.string().min(1),
+});
+export type DownloadDocumentResponse = z.infer<typeof DownloadDocumentResponseSchema>;
+
 export const JobResponseSchema = z.object({
   id: z.string(),
   document_id: z.string(),

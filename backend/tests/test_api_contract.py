@@ -99,7 +99,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(payload["citations"])
         self.assertEqual(payload["citations"][0]["page_start"], 5)
 
-    def test_document_download_redirects_to_signed_url(self) -> None:
+    def test_document_download_returns_signed_url_payload(self) -> None:
         doc_id = uuid4()
         signed_url = "https://example.supabase.co/storage/v1/object/sign/paperbridge-documents/a.pdf?token=abc"
 
@@ -116,10 +116,72 @@ class ApiContractTests(unittest.TestCase):
 
         app.dependency_overrides[get_db] = _download_db_dependency
         with patch("app.routers.documents.storage_service.create_signed_download_url", return_value=signed_url):
-            resp = self.client.get(f"/documents/{doc_id}/download", follow_redirects=False)
+            resp = self.client.get(f"/documents/{doc_id}/download")
 
-        self.assertEqual(resp.status_code, 307)
-        self.assertEqual(resp.headers.get("location"), signed_url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"url": signed_url, "filename": "directive060.pdf"})
+
+    def test_document_download_missing_storage_key_returns_400(self) -> None:
+        doc_id = uuid4()
+
+        class FakeDb:
+            async def get(self, _model, _document_id):
+                return SimpleNamespace(
+                    id=doc_id,
+                    filename="directive060.pdf",
+                    storage_key="",
+                )
+
+        async def _download_db_dependency():
+            yield FakeDb()
+
+        app.dependency_overrides[get_db] = _download_db_dependency
+        resp = self.client.get(f"/documents/{doc_id}/download")
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("storage key", resp.text.lower())
+
+    def test_document_download_normalizes_bucket_prefixed_storage_key(self) -> None:
+        doc_id = uuid4()
+        signed_url = "https://example.supabase.co/storage/v1/object/sign/paperbridge-documents/a.pdf?token=abc"
+
+        class FakeDb:
+            async def get(self, _model, _document_id):
+                return SimpleNamespace(
+                    id=doc_id,
+                    filename="directive060.pdf",
+                    storage_key="paperbridge-documents/documents/abc/v1/directive060.pdf",
+                )
+
+        async def _download_db_dependency():
+            yield FakeDb()
+
+        app.dependency_overrides[get_db] = _download_db_dependency
+        with patch("app.routers.documents.storage_service.create_signed_download_url", return_value=signed_url) as mocked:
+            resp = self.client.get(f"/documents/{doc_id}/download")
+
+        self.assertEqual(resp.status_code, 200)
+        mocked.assert_called_once_with(
+            "documents/abc/v1/directive060.pdf",
+            expires_in=60,
+            download_filename="directive060.pdf",
+        )
+
+    def test_document_download_missing_document_returns_404(self) -> None:
+        missing_id = uuid4()
+
+        class FakeDb:
+            async def get(self, _model, _document_id):
+                return None
+
+        async def _download_db_dependency():
+            yield FakeDb()
+
+        app.dependency_overrides[get_db] = _download_db_dependency
+        resp = self.client.get(f"/documents/{missing_id}/download")
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("document not found", resp.text.lower())
 
 
 if __name__ == "__main__":

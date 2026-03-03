@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   AskResponseSchema,
+  DownloadDocumentResponseSchema,
   DocumentResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
@@ -9,6 +10,7 @@ import {
   ReviewEditResponseSchema,
   UploadDocumentResponseSchema,
   type AskResponse,
+  type DownloadDocumentResponse,
   type DocumentResponse,
   type HealthResponse,
   type JobResponse,
@@ -188,6 +190,10 @@ export async function submitExtractionReview(
   );
 }
 
-export function getDownloadUrl(documentId: string): string {
-  return buildApiPath(`/documents/${encodeURIComponent(documentId)}/download`);
+export async function getDocumentDownload(documentId: string): Promise<DownloadDocumentResponse> {
+  return apiRequest<DownloadDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}/download`,
+    {},
+    DownloadDocumentResponseSchema,
+  );
 }

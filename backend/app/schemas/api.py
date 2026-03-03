@@ -20,6 +20,11 @@ class UploadDocumentResponse(DocumentResponse):
     pipeline_job_id: Optional[UUID] = None
 
 
+class DownloadDocumentResponse(BaseModel):
+    url: str
+    filename: str
+
+
 class JobResponse(BaseModel):
     id: UUID
     document_id: UUID
@@ -32,11 +37,6 @@ class JobResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-class ExportResponse(BaseModel):
-    data: Dict[str, Any]
-    status: str
-
 
 class ErrorDetail(BaseModel):
     code: str = Field(description="Machine-readable error code")

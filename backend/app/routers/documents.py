@@ -2,11 +2,12 @@ import hashlib
 import re
 from pathlib import Path
 from typing import List
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse
+from storage3.exceptions import StorageApiError
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,7 +16,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.db.database import get_db
 from app.db.models import Document, DocumentPage, Embedding
-from app.schemas.api import DocumentResponse, ErrorResponse, UploadDocumentResponse
+from app.schemas.api import DownloadDocumentResponse, DocumentResponse, ErrorResponse, UploadDocumentResponse
 from app.services.document_status import (
     DOCUMENT_STATUS_UPLOADED,
     compute_document_statuses,
@@ -28,7 +29,7 @@ router = APIRouter(tags=["documents"])
 
 ALLOWED_PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf", "application/octet-stream"}
 UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
-DOWNLOAD_URL_TTL_SECONDS = 120
+DOWNLOAD_URL_TTL_SECONDS = 60
 
 
 def _safe_filename(filename: str) -> str:
@@ -38,6 +39,32 @@ def _safe_filename(filename: str) -> str:
 
 def _compute_checksum(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
+
+
+def _normalize_storage_key(storage_key: str, bucket: str) -> str:
+    key = storage_key.strip()
+    if not key:
+        return ""
+
+    parsed = urlparse(key)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        path = parsed.path or ""
+        markers = [
+            f"/object/sign/{bucket}/",
+            f"/object/public/{bucket}/",
+            f"/object/{bucket}/",
+            f"/render/image/public/{bucket}/",
+        ]
+        for marker in markers:
+            if marker in path:
+                key = path.split(marker, 1)[1]
+                break
+
+    key = key.lstrip("/")
+    bucket_prefix = f"{bucket}/"
+    if key.startswith(bucket_prefix):
+        key = key[len(bucket_prefix):]
+    return key
 
 
 async def _read_upload_bytes(upload: UploadFile, max_bytes: int) -> bytes:
@@ -319,9 +346,13 @@ async def get_document(document_id: UUID, db: AsyncSession = Depends(get_db)):
 
 @router.get(
     "/documents/{document_id}/download",
-    response_class=RedirectResponse,
-    summary="Download the original uploaded PDF via short-lived signed URL",
-    responses={404: {"model": ErrorResponse, "description": "Document not found"}},
+    response_model=DownloadDocumentResponse,
+    summary="Get a short-lived signed download URL for the original uploaded PDF",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid or missing storage key"},
+        404: {"model": ErrorResponse, "description": "Document or object not found"},
+        502: {"model": ErrorResponse, "description": "Failed to generate signed URL"},
+    },
 )
 async def download_document(document_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
     request_id = getattr(request.state, "request_id", None)
@@ -329,24 +360,73 @@ async def download_document(document_id: UUID, request: Request, db: AsyncSessio
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    try:
-        signed_url = await run_in_threadpool(
-            storage_service.create_signed_download_url,
-            doc.storage_key,
-            expires_in=DOWNLOAD_URL_TTL_SECONDS,
-            download_filename=doc.filename,
+    if not doc.storage_key or not doc.storage_key.strip():
+        logger.warning(
+            "document_download_missing_storage_key request_id=%s document_id=%s bucket=%s",
+            request_id,
+            document_id,
+            storage_service.bucket,
         )
-    except Exception as exc:
-        logger.error(
-            "document_download_signed_url_failed request_id=%s document_id=%s storage_key=%s error=%s",
+        raise HTTPException(status_code=400, detail="Document has no storage key.")
+
+    normalized_storage_key = _normalize_storage_key(doc.storage_key, storage_service.bucket)
+    if not normalized_storage_key:
+        logger.warning(
+            "document_download_invalid_storage_key request_id=%s document_id=%s storage_key=%s bucket=%s",
             request_id,
             document_id,
             doc.storage_key,
+            storage_service.bucket,
+        )
+        raise HTTPException(status_code=400, detail="Document storage key is invalid.")
+
+    try:
+        signed_url = await run_in_threadpool(
+            storage_service.create_signed_download_url,
+            normalized_storage_key,
+            expires_in=DOWNLOAD_URL_TTL_SECONDS,
+            download_filename=doc.filename,
+        )
+    except StorageApiError as exc:
+        status_code = 502
+        detail = "Failed to prepare document download."
+        message = (exc.message or "").lower()
+        if str(exc.status) == "404" or "not found" in message:
+            status_code = 404
+            detail = "Document file not found in storage."
+        logger.error(
+            "document_download_storage_api_error request_id=%s document_id=%s storage_key=%s normalized_storage_key=%s bucket=%s status=%s code=%s message=%s",
+            request_id,
+            document_id,
+            doc.storage_key,
+            normalized_storage_key,
+            storage_service.bucket,
+            exc.status,
+            exc.code,
+            exc.message,
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        logger.error(
+            "document_download_signed_url_failed request_id=%s document_id=%s storage_key=%s normalized_storage_key=%s bucket=%s error=%s",
+            request_id,
+            document_id,
+            doc.storage_key,
+            normalized_storage_key,
+            storage_service.bucket,
             exc,
         )
         raise HTTPException(status_code=502, detail="Failed to prepare document download.") from exc
 
-    return RedirectResponse(url=signed_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    logger.info(
+        "document_download_signed_url_ready request_id=%s document_id=%s storage_key=%s normalized_storage_key=%s bucket=%s",
+        request_id,
+        document_id,
+        doc.storage_key,
+        normalized_storage_key,
+        storage_service.bucket,
+    )
+    return DownloadDocumentResponse(url=signed_url, filename=doc.filename)
 
 
 @router.delete(

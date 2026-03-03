@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { CitationList } from "@/components/citation-list";
 import { JobList } from "@/components/job-list";
 import { useJobs } from "@/components/providers/job-provider";
-import { askQuestion, getDocument, getDownloadUrl } from "@/lib/api";
+import { askQuestion, getDocument, getDocumentDownload } from "@/lib/api";
 import type { AskResponse, DocumentResponse } from "@/lib/types";
 
 type TabKey = "ask" | "jobs";
@@ -31,6 +31,7 @@ export default function DocumentDetailPage() {
   const [question, setQuestion] = useState("");
   const [askResult, setAskResult] = useState<AskResponse | null>(null);
   const [asking, setAsking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const documentJobs = useMemo(() => jobsForDocument(documentId), [documentId, jobsForDocument]);
 
@@ -74,8 +75,23 @@ export default function DocumentDetailPage() {
     }
   }
 
-  const downloadUrl = getDownloadUrl(documentId);
   const canAsk = documentRecord?.status === "ready";
+
+  async function handleDownload() {
+    if (!documentRecord || downloading) {
+      return;
+    }
+    setError(null);
+    setDownloading(true);
+    try {
+      const { url } = await getDocumentDownload(documentRecord.id);
+      window.location.assign(url);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Failed to download document.");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
     <section className="page-grid">
@@ -93,20 +109,19 @@ export default function DocumentDetailPage() {
               </button>
             </div>
 
-            <p className="muted mono">Document ID: {documentRecord.id}</p>
             <div className="muted flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-              <span>Pages {documentRecord.total_pages}</span>
-              <span>Version {documentRecord.version}</span>
-              <span>Created {new Date(documentRecord.created_at).toLocaleString()}</span>
+              <p>Pages: {documentRecord.total_pages}</p>
+              <p>Version: {documentRecord.version}</p>
+              <p>Created at: {new Date(documentRecord.created_at).toLocaleString()}</p>
             </div>
             <p className="top-gap m-0">
               <span className={statusClass(documentRecord.status)}>{documentRecord.status}</span>
             </p>
 
             <div className="button-row wrap top-gap">
-              <a href={downloadUrl} className="link-button">
+              <button type="button" className="link-button" onClick={() => void handleDownload()} disabled={downloading}>
                 Download
-              </a>
+              </button>
             </div>
           </>
         ) : null}
