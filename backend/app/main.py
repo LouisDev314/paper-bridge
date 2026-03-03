@@ -46,7 +46,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins or ["http://localhost:3000"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
