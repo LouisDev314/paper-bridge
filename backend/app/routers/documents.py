@@ -2,21 +2,25 @@ import hashlib
 import re
 from pathlib import Path
 from typing import List
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.database import get_db
-from app.db.models import Document, DocumentPage
+from app.db.models import Document, DocumentPage, Embedding
 from app.schemas.api import DocumentResponse, ErrorResponse, UploadDocumentResponse
-from app.services.pipeline import ensure_pipeline_job, run_pipeline_job
+from app.services.document_status import (
+    DOCUMENT_STATUS_UPLOADED,
+    compute_document_statuses,
+)
 from app.services.pdf_parser import parse_pdf
+from app.services.pipeline import ensure_pipeline_job, run_pipeline_job
 from app.services.supabase_storage import storage_service
 
 router = APIRouter(tags=["documents"])
@@ -46,33 +50,34 @@ async def _read_upload_bytes(upload: UploadFile, max_bytes: int) -> bytes:
     return bytes(data)
 
 
-def _to_upload_response(document: Document, pipeline_job_id: UUID | None = None) -> UploadDocumentResponse:
-    payload = UploadDocumentResponse.model_validate(document)
-    payload.pipeline_job_id = pipeline_job_id
-    return payload
-
-
-async def _queue_pipeline_if_requested(
+async def _queue_pipeline(
     *,
     request_id: str | None,
     document_id: UUID,
-    auto_process: bool,
     background_tasks: BackgroundTasks,
     db: AsyncSession,
-) -> UUID | None:
-    if not auto_process:
-        return None
+) -> UUID:
     pipeline_job = await ensure_pipeline_job(document_id=document_id, db=db, request_id=request_id)
     if pipeline_job.status == "queued":
         background_tasks.add_task(run_pipeline_job, pipeline_job.id, request_id)
     return pipeline_job.id
 
 
+async def _existing_document_by_checksum(db: AsyncSession, checksum_sha256: str) -> Document | None:
+    return (
+        await db.execute(
+            select(Document)
+            .where(Document.checksum_sha256 == checksum_sha256)
+            .order_by(Document.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+
 async def _ingest_pdf_upload(
     *,
     request_id: str | None,
     file: UploadFile,
-    dedupe: bool,
     db: AsyncSession,
 ) -> Document:
     filename = file.filename or ""
@@ -88,16 +93,8 @@ async def _ingest_pdf_upload(
     file_bytes = await _read_upload_bytes(file, max_bytes=max_bytes)
     checksum_sha256 = _compute_checksum(file_bytes)
 
-    existing_doc = (
-        await db.execute(
-            select(Document)
-            .where(Document.checksum_sha256 == checksum_sha256)
-            .order_by(Document.version.desc())
-            .limit(1)
-        )
-    ).scalars().first()
-
-    if dedupe and existing_doc:
+    existing_doc = await _existing_document_by_checksum(db, checksum_sha256)
+    if existing_doc:
         logger.info(
             "upload_deduped request_id=%s checksum=%s existing_document_id=%s version=%s",
             request_id,
@@ -109,16 +106,32 @@ async def _ingest_pdf_upload(
         return existing_doc
 
     version = 1
-    if existing_doc:
-        version = int(existing_doc.version) + 1
-
-    doc = Document(filename=safe_name, storage_key="", checksum_sha256=checksum_sha256, version=version)
-    db.add(doc)
-    await db.flush()
-
+    document_id = uuid4()
     storage_key = f"documents/{checksum_sha256[:16]}/v{version}/{safe_name}"
-    file_uploaded = False
 
+    existing_storage_doc = (
+        await db.execute(select(Document).where(Document.storage_key == storage_key).limit(1))
+    ).scalars().first()
+    if existing_storage_doc:
+        logger.info(
+            "upload_deduped_storage_key request_id=%s storage_key=%s existing_document_id=%s",
+            request_id,
+            storage_key,
+            existing_storage_doc.id,
+        )
+        await file.close()
+        return existing_storage_doc
+
+    doc = Document(
+        id=document_id,
+        filename=safe_name,
+        storage_key=storage_key,
+        checksum_sha256=checksum_sha256,
+        version=version,
+        total_pages=0,
+    )
+
+    file_uploaded = False
     try:
         logger.info(
             "upload_start request_id=%s document_id=%s checksum=%s version=%s storage_key=%s",
@@ -130,11 +143,11 @@ async def _ingest_pdf_upload(
         )
         await run_in_threadpool(storage_service.upload_file, file_bytes, storage_key, "application/pdf")
         file_uploaded = True
-        doc.storage_key = storage_key
 
         total_pages, pages_data = await parse_pdf(file_bytes, str(doc.id))
         doc.total_pages = total_pages
 
+        db.add(doc)
         for pd in pages_data:
             db.add(
                 DocumentPage(
@@ -145,6 +158,8 @@ async def _ingest_pdf_upload(
                     page_image_key=pd["page_image_key"],
                 )
             )
+        await db.commit()
+        await db.refresh(doc)
     except ValueError as exc:
         await db.rollback()
         if file_uploaded:
@@ -160,8 +175,6 @@ async def _ingest_pdf_upload(
     finally:
         await file.close()
 
-    await db.commit()
-    await db.refresh(doc)
     logger.info(
         "upload_complete request_id=%s document_id=%s total_pages=%s checksum=%s version=%s",
         request_id,
@@ -173,10 +186,40 @@ async def _ingest_pdf_upload(
     return doc
 
 
+def _to_document_response(document: Document, status_value: str) -> DocumentResponse:
+    return DocumentResponse(
+        id=document.id,
+        filename=document.filename,
+        checksum_sha256=document.checksum_sha256,
+        version=document.version,
+        total_pages=document.total_pages,
+        status=status_value,
+        created_at=document.created_at,
+    )
+
+
+def _to_upload_response(
+    document: Document,
+    *,
+    status_value: str,
+    pipeline_job_id: UUID | None,
+) -> UploadDocumentResponse:
+    return UploadDocumentResponse(
+        id=document.id,
+        filename=document.filename,
+        checksum_sha256=document.checksum_sha256,
+        version=document.version,
+        total_pages=document.total_pages,
+        status=status_value,
+        created_at=document.created_at,
+        pipeline_job_id=pipeline_job_id,
+    )
+
+
 @router.post(
     "/documents",
     response_model=UploadDocumentResponse,
-    summary="Upload a PDF and parse its pages",
+    summary="Upload a PDF and trigger parse, extraction, and embedding pipeline",
     responses={
         400: {"model": ErrorResponse, "description": "Invalid file type or payload"},
         413: {"model": ErrorResponse, "description": "File too large"},
@@ -187,32 +230,28 @@ async def upload_document(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    dedupe: bool = Query(
-        default=True,
-        description="If true, returns the existing document when this exact file checksum already exists.",
-    ),
-    auto_process: bool = Query(
-        default=False,
-        description="If true, automatically orchestrates extract then embed as a pipeline job.",
-    ),
     db: AsyncSession = Depends(get_db),
 ):
     request_id = getattr(request.state, "request_id", None)
-    document = await _ingest_pdf_upload(request_id=request_id, file=file, dedupe=dedupe, db=db)
-    pipeline_job_id = await _queue_pipeline_if_requested(
+    document = await _ingest_pdf_upload(request_id=request_id, file=file, db=db)
+    pipeline_job_id = await _queue_pipeline(
         request_id=request_id,
         document_id=document.id,
-        auto_process=auto_process,
         background_tasks=background_tasks,
         db=db,
     )
-    return _to_upload_response(document, pipeline_job_id)
+    status_map = await compute_document_statuses(db, [document.id])
+    return _to_upload_response(
+        document,
+        status_value=status_map.get(document.id, DOCUMENT_STATUS_UPLOADED),
+        pipeline_job_id=pipeline_job_id,
+    )
 
 
 @router.post(
     "/documents/batch",
     response_model=List[UploadDocumentResponse],
-    summary="Upload multiple PDFs and parse pages",
+    summary="Upload multiple PDFs and trigger parse, extraction, and embedding pipeline",
     responses={
         400: {"model": ErrorResponse, "description": "Invalid file type or payload"},
         413: {"model": ErrorResponse, "description": "File too large"},
@@ -223,14 +262,6 @@ async def batch_upload_documents(
     request: Request,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
-    dedupe: bool = Query(
-        default=True,
-        description="If true, returns the existing document when an exact file checksum already exists.",
-    ),
-    auto_process: bool = Query(
-        default=False,
-        description="If true, automatically orchestrates extract then embed for each uploaded document.",
-    ),
     db: AsyncSession = Depends(get_db),
 ):
     request_id = getattr(request.state, "request_id", None)
@@ -239,15 +270,21 @@ async def batch_upload_documents(
 
     responses: list[UploadDocumentResponse] = []
     for upload in files:
-        document = await _ingest_pdf_upload(request_id=request_id, file=upload, dedupe=dedupe, db=db)
-        pipeline_job_id = await _queue_pipeline_if_requested(
+        document = await _ingest_pdf_upload(request_id=request_id, file=upload, db=db)
+        pipeline_job_id = await _queue_pipeline(
             request_id=request_id,
             document_id=document.id,
-            auto_process=auto_process,
             background_tasks=background_tasks,
             db=db,
         )
-        responses.append(_to_upload_response(document, pipeline_job_id))
+        status_map = await compute_document_statuses(db, [document.id])
+        responses.append(
+            _to_upload_response(
+                document,
+                status_value=status_map.get(document.id, DOCUMENT_STATUS_UPLOADED),
+                pipeline_job_id=pipeline_job_id,
+            )
+        )
     return responses
 
 
@@ -258,7 +295,9 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Document).order_by(Document.created_at.desc()).offset(skip).limit(limit))
-    return result.scalars().all()
+    documents = result.scalars().all()
+    status_map = await compute_document_statuses(db, [document.id for document in documents])
+    return [_to_document_response(document, status_map.get(document.id, DOCUMENT_STATUS_UPLOADED)) for document in documents]
 
 
 @router.get(
@@ -271,7 +310,9 @@ async def get_document(document_id: UUID, db: AsyncSession = Depends(get_db)):
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return doc
+
+    status_map = await compute_document_statuses(db, [doc.id])
+    return _to_document_response(doc, status_map.get(doc.id, DOCUMENT_STATUS_UPLOADED))
 
 
 @router.delete(
@@ -291,7 +332,7 @@ async def delete_document(document_id: UUID, request: Request, db: AsyncSession 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    storage_paths = [doc.storage_key] + [p.page_image_key for p in doc.pages if p.page_image_key]
+    storage_paths = [doc.storage_key] + [page.page_image_key for page in doc.pages if page.page_image_key]
     if storage_paths:
         try:
             await run_in_threadpool(storage_service.delete_files, storage_paths)
@@ -303,6 +344,7 @@ async def delete_document(document_id: UUID, request: Request, db: AsyncSession 
                 exc,
             )
 
+    await db.execute(delete(Embedding).where(Embedding.document_id == document_id))
     await db.delete(doc)
     await db.commit()
     logger.info("document_deleted request_id=%s document_id=%s", request_id, document_id)

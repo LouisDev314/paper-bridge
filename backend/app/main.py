@@ -12,7 +12,7 @@ from app.core.logging import logger, set_request_id
 from app.core.rate_limit import SlidingWindowRateLimiter
 from app.schemas.api import ErrorResponse
 
-from app.routers import health_router, documents_router, jobs_router, extract_router, embed_router, ask_router, review_router, export_router
+from app.routers import health_router, documents_router, jobs_router, ask_router, review_router, export_router
 
 ask_rate_limiter = SlidingWindowRateLimiter(settings.ask_rate_limit_per_minute, window_seconds=60)
 upload_rate_limiter = SlidingWindowRateLimiter(settings.upload_rate_limit_per_minute, window_seconds=60)
@@ -35,8 +35,6 @@ app = FastAPI(
     openapi_tags=[
         {"name": "health", "description": "Service health and readiness."},
         {"name": "documents", "description": "Document upload and retrieval."},
-        {"name": "extract", "description": "Extraction jobs and structured output."},
-        {"name": "embed", "description": "Embedding jobs for vector retrieval."},
         {"name": "ask", "description": "Multi-document question answering with citations."},
         {"name": "jobs", "description": "Job status polling."},
         {"name": "review", "description": "Review and corrections for extraction results."},
@@ -152,8 +150,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(health_router)
 app.include_router(documents_router)
 app.include_router(jobs_router)
-app.include_router(extract_router)
-app.include_router(embed_router)
 app.include_router(ask_router)
 app.include_router(review_router)
 app.include_router(export_router)

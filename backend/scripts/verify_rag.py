@@ -13,14 +13,14 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def _poll_job(client: httpx.Client, base_url: str, job_id: str, timeout_s: int = 600) -> dict:
+def _poll_job(client: httpx.Client, base_url: str, job_id: str, timeout_s: int = 900) -> dict:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         resp = client.get(f"{base_url}/jobs/{job_id}")
         resp.raise_for_status()
         payload = resp.json()
         status = payload.get("status")
-        if status in {"done", "needs_review"}:
+        if status == "done":
             return payload
         if status == "failed":
             raise RuntimeError(f"Job {job_id} failed: {payload.get('error_message')}")
@@ -28,12 +28,11 @@ def _poll_job(client: httpx.Client, base_url: str, job_id: str, timeout_s: int =
     raise TimeoutError(f"Timed out waiting for job {job_id}")
 
 
-def _upload_document(client: httpx.Client, base_url: str, pdf_path: Path, dedupe: bool = True) -> dict:
-    with pdf_path.open("rb") as f:
+def _upload_document(client: httpx.Client, base_url: str, pdf_path: Path) -> dict:
+    with pdf_path.open("rb") as pdf_file:
         resp = client.post(
             f"{base_url}/documents",
-            params={"dedupe": str(dedupe).lower()},
-            files={"file": (pdf_path.name, f, "application/pdf")},
+            files={"file": (pdf_path.name, pdf_file, "application/pdf")},
         )
     resp.raise_for_status()
     return resp.json()
@@ -50,7 +49,7 @@ def _ask_and_assert(
 ) -> None:
     resp = client.post(
         f"{base_url}/ask",
-        json={"question": question, "doc_ids": [doc_id], "top_k": 8},
+        json={"question": question, "doc_ids": [doc_id]},
     )
     resp.raise_for_status()
     payload = resp.json()
@@ -59,14 +58,20 @@ def _ask_and_assert(
 
     print(f"Q: {question}")
     print(f"A: {answer}")
-    print(f"Citations: {[c.get('chunk_id') for c in citations]}")
+    print(f"Citations: {[citation.get('chunk_id') for citation in citations]}")
 
     _assert(citations, f"Expected citations for question: {question}")
     for citation in citations:
-        ps = citation.get("pdf_page_start")
-        pe = citation.get("pdf_page_end")
-        _assert(isinstance(ps, int) and isinstance(pe, int), f"Citation pages missing for question: {question}")
-        _assert(1 <= ps <= total_pages and 1 <= pe <= total_pages, f"Citation pages out of range for question: {question}")
+        page_start = citation.get("pdf_page_start")
+        page_end = citation.get("pdf_page_end")
+        _assert(
+            isinstance(page_start, int) and isinstance(page_end, int),
+            f"Citation pages missing for question: {question}",
+        )
+        _assert(
+            1 <= page_start <= total_pages and 1 <= page_end <= total_pages,
+            f"Citation pages out of range for question: {question}",
+        )
 
     if should_be_found:
         lowered = answer.lower()
@@ -144,23 +149,18 @@ def main() -> int:
     _assert(pdf_path.exists(), f"PDF not found: {pdf_path}")
 
     with httpx.Client(timeout=180) as client:
-        doc_a = _upload_document(client, args.base_url, pdf_path, dedupe=True)
-        doc_b = _upload_document(client, args.base_url, pdf_path, dedupe=True)
-        _assert(doc_a["id"] == doc_b["id"], "Expected dedupe=true re-upload to return the same document ID")
+        first_upload = _upload_document(client, args.base_url, pdf_path)
+        second_upload = _upload_document(client, args.base_url, pdf_path)
+        _assert(first_upload["id"] == second_upload["id"], "Expected re-upload to return the same deduped document ID")
 
-        doc_new_version = _upload_document(client, args.base_url, pdf_path, dedupe=False)
-        _assert(doc_new_version["id"] != doc_a["id"], "Expected dedupe=false re-upload to create a new document")
-        _assert(doc_new_version["version"] > doc_a["version"], "Expected version increment on dedupe=false upload")
+        doc_id = first_upload["id"]
+        total_pages = int(first_upload["total_pages"])
+        pipeline_job_id = first_upload.get("pipeline_job_id")
+        _assert(pipeline_job_id, "Upload response missing pipeline_job_id")
 
-        doc_id = doc_new_version["id"]
-        total_pages = int(doc_new_version["total_pages"])
-        print(f"Using document_id={doc_id} version={doc_new_version['version']} total_pages={total_pages}")
-
-        embed_resp = client.post(f"{args.base_url}/documents/{doc_id}/embed")
-        embed_resp.raise_for_status()
-        embed_job = embed_resp.json()["id"]
-        _poll_job(client, args.base_url, embed_job)
-        print(f"Embedding complete: job_id={embed_job}")
+        print(f"Using document_id={doc_id} version={first_upload['version']} total_pages={total_pages}")
+        _poll_job(client, args.base_url, pipeline_job_id)
+        print(f"Pipeline complete: job_id={pipeline_job_id}")
 
         for case in TEST_CASES:
             _ask_and_assert(

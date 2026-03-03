@@ -28,7 +28,7 @@ class SupabaseStorage:
             self._get_client().storage.from_(self.bucket).upload(
                 path=destination_key,
                 file=file_bytes,
-                file_options={"content-type": content_type, "upsert": "false"},
+                file_options={"content-type": content_type, "upsert": 'true'},
             )
             return destination_key
         except Exception as exc:

@@ -1,21 +1,75 @@
 import time
-
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, insert, select
 from uuid import UUID
+
+from sqlalchemy import delete, insert, select
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.db.database import get_db, AsyncSessionLocal
-from app.db.models import Document, Job, DocumentPage, Embedding
-from app.schemas.api import ErrorResponse, JobResponse
+from app.db.database import AsyncSessionLocal
+from app.db.models import DocumentPage, Embedding, Extraction, Job
 from app.services.chunker import chunk_text
 from app.services.embedder import generate_embeddings
+from app.services.extractor import extract_document_features
+from app.services.validator import validate_extraction
 
-router = APIRouter(tags=["embed"])
 
-async def run_embed_job(job_id: UUID):
+async def run_extraction_job(job_id: UUID) -> None:
+    async with AsyncSessionLocal() as db:
+        job = await db.get(Job, job_id)
+        if not job:
+            return
+
+        job.status = "processing"
+        job.error_message = None
+        await db.commit()
+
+        started_at = time.perf_counter()
+        try:
+            result = await db.execute(
+                select(DocumentPage)
+                .where(DocumentPage.document_id == job.document_id)
+                .order_by(DocumentPage.page_number)
+            )
+            pages = result.scalars().all()
+            full_text = "\n\n".join([page.text or "" for page in pages])
+
+            if not full_text.strip():
+                raise ValueError("No extracted text found for document.")
+
+            extraction_pydantic = await extract_document_features(full_text)
+            status = validate_extraction(extraction_pydantic)
+
+            extraction_entry = Extraction(
+                document_id=job.document_id,
+                data=extraction_pydantic.model_dump(),
+                status=status,
+            )
+            db.add(extraction_entry)
+
+            job.status = "done"
+            if status == "FLAGGED":
+                job.status = "needs_review"
+
+            await db.commit()
+            logger.info(
+                "extract_job_done job_id=%s document_id=%s status=%s duration_ms=%.2f",
+                job_id,
+                job.document_id,
+                job.status,
+                (time.perf_counter() - started_at) * 1000,
+            )
+        except Exception as exc:
+            logger.error("extract_job_failed job_id=%s document_id=%s error=%s", job_id, job.document_id, exc)
+            await db.rollback()
+            job = await db.get(Job, job_id)
+            if not job:
+                return
+            job.status = "failed"
+            job.error_message = f"Extraction job failed: {exc}"
+            await db.commit()
+
+
+async def run_embedding_job(job_id: UUID) -> None:
     async with AsyncSessionLocal() as db:
         job = await db.get(Job, job_id)
         if not job:
@@ -38,21 +92,23 @@ async def run_embed_job(job_id: UUID):
             if not pages:
                 raise ValueError("No parsed pages found. Upload and parse the document before embedding.")
 
-            all_chunks: list[dict] = []
+            all_chunks: list[dict[str, object]] = []
             for page in pages:
                 if not page.text:
                     continue
                 page_chunks = chunk_text(page.text)
-                for i, chunk in enumerate(page_chunks):
-                    all_chunks.append({
-                        "chunk_id": f"p{page.page_number}-c{i}",
-                        "page_start": page.page_number,
-                        "page_end": page.page_number,
-                        "pdf_page_start": page.page_number,
-                        "pdf_page_end": page.page_number,
-                        "content": chunk.content,
-                        "token_count": chunk.approx_tokens,
-                    })
+                for index, chunk in enumerate(page_chunks):
+                    all_chunks.append(
+                        {
+                            "chunk_id": f"p{page.page_number}-c{index}",
+                            "page_start": page.page_number,
+                            "page_end": page.page_number,
+                            "pdf_page_start": page.page_number,
+                            "pdf_page_end": page.page_number,
+                            "content": chunk.content,
+                            "token_count": chunk.approx_tokens,
+                        }
+                    )
 
             logger.info(
                 "chunking_complete job_id=%s document_id=%s pages=%s chunks=%s chunk_size_tokens=%s overlap_tokens=%s",
@@ -70,15 +126,16 @@ async def run_embed_job(job_id: UUID):
                 return
 
             await db.execute(delete(Embedding).where(Embedding.document_id == job.document_id))
-            texts = [c["content"] for c in all_chunks]
+            texts = [str(chunk["content"]) for chunk in all_chunks]
             batch_size = settings.embedding_batch_size
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i:i+batch_size]
+
+            for start in range(0, len(texts), batch_size):
+                batch_texts = texts[start : start + batch_size]
                 batch_embeddings = await generate_embeddings(batch_texts, request_id=str(job_id))
 
                 rows_to_insert = []
-                for j, emb in enumerate(batch_embeddings):
-                    chunk_meta = all_chunks[i + j]
+                for offset, embedding in enumerate(batch_embeddings):
+                    chunk_meta = all_chunks[start + offset]
                     rows_to_insert.append(
                         {
                             "document_id": job.document_id,
@@ -88,14 +145,15 @@ async def run_embed_job(job_id: UUID):
                             "pdf_page_start": chunk_meta["pdf_page_start"],
                             "pdf_page_end": chunk_meta["pdf_page_end"],
                             "content": chunk_meta["content"],
-                            "embedding": emb,
+                            "embedding": embedding,
                         }
                     )
+
                 await db.execute(insert(Embedding), rows_to_insert)
                 logger.info(
                     "embedding_batch_inserted job_id=%s batch_start=%s batch_size=%s embedding_model=%s",
                     job_id,
-                    i,
+                    start,
                     len(rows_to_insert),
                     settings.openai_embed_model,
                 )
@@ -109,7 +167,6 @@ async def run_embed_job(job_id: UUID):
                 len(all_chunks),
                 (time.perf_counter() - started_at) * 1000,
             )
-
         except Exception as exc:
             logger.exception("embed_job_failed job_id=%s error=%s", job_id, exc)
             await db.rollback()
@@ -119,53 +176,3 @@ async def run_embed_job(job_id: UUID):
             job.status = "failed"
             job.error_message = f"Embedding job failed: {exc}"
             await db.commit()
-
-@router.post(
-    "/documents/{document_id}/embed",
-    response_model=JobResponse,
-    summary="Queue an embedding job for a document",
-    responses={
-        404: {"model": ErrorResponse, "description": "Document not found"},
-        500: {"model": ErrorResponse, "description": "Internal server error"},
-    },
-)
-async def trigger_embed(
-    document_id: UUID,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-):
-    request_id = getattr(request.state, "request_id", None)
-    doc = await db.get(Document, document_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    existing = await db.execute(
-        select(Job)
-        .where(Job.document_id == document_id, Job.task_type == "embed", Job.status.in_(["queued", "processing"]))
-        .order_by(Job.created_at.desc())
-    )
-    running = existing.scalars().first()
-    if running:
-        logger.info(
-            "embed_job_reused request_id=%s document_id=%s job_id=%s status=%s",
-            request_id,
-            document_id,
-            running.id,
-            running.status,
-        )
-        return running
-
-    job = Job(document_id=document_id, task_type="embed", status="queued")
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
-
-    logger.info(
-        "embed_job_queued request_id=%s document_id=%s job_id=%s",
-        request_id,
-        document_id,
-        job.id,
-    )
-    background_tasks.add_task(run_embed_job, job.id)
-    return job

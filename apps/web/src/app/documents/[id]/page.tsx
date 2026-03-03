@@ -6,25 +6,29 @@ import { useParams } from "next/navigation";
 import { CitationList } from "@/components/citation-list";
 import { JobList } from "@/components/job-list";
 import { useJobs } from "@/components/providers/job-provider";
-import { askQuestion, getDocument, getExportUrl, triggerEmbed, triggerExtract } from "@/lib/api";
+import { askQuestion, getDocument, getExportUrl } from "@/lib/api";
 import type { AskResponse, DocumentResponse } from "@/lib/types";
 
-type TaskType = "extract" | "embed";
 type TabKey = "ask" | "jobs";
+
+function statusClass(status: DocumentResponse["status"]): string {
+  if (status === "ready") return "status status-ok";
+  if (status === "failed") return "status status-bad";
+  if (status === "processing") return "status status-neutral";
+  return "status status-neutral";
+}
 
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string }>();
   const documentId = Array.isArray(params.id) ? params.id[0] : params.id;
 
-  const { jobsForDocument, registerJob } = useJobs();
+  const { jobsForDocument } = useJobs();
   const [documentRecord, setDocumentRecord] = useState<DocumentResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabKey>("ask");
   const [question, setQuestion] = useState("");
-  const [topK, setTopK] = useState(8);
   const [askResult, setAskResult] = useState<AskResponse | null>(null);
   const [asking, setAsking] = useState(false);
 
@@ -49,28 +53,17 @@ export default function DocumentDetailPage() {
     void refreshDocument();
   }, [refreshDocument]);
 
-  async function queueTask(task: TaskType) {
-    setError(null);
-    setRunningAction(task);
-
-    try {
-      const job = task === "extract" ? await triggerExtract(documentId) : await triggerEmbed(documentId);
-      registerJob(job);
-      setActiveTab("jobs");
-    } catch (taskError) {
-      setError(taskError instanceof Error ? taskError.message : `Failed to queue ${task} job.`);
-    } finally {
-      setRunningAction(null);
-    }
-  }
-
   async function handleAsk(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!documentRecord || documentRecord.status !== "ready") {
+      return;
+    }
+
     setAsking(true);
     setError(null);
 
     try {
-      const response = await askQuestion(question, [documentId], topK);
+      const response = await askQuestion(question, [documentId]);
       setAskResult(response);
       setActiveTab("ask");
     } catch (askError) {
@@ -83,6 +76,7 @@ export default function DocumentDetailPage() {
 
   const exportJsonUrl = getExportUrl(documentId, "json");
   const exportCsvUrl = getExportUrl(documentId, "csv");
+  const canAsk = documentRecord?.status === "ready";
 
   return (
     <section className="page-grid">
@@ -105,24 +99,11 @@ export default function DocumentDetailPage() {
               Pages {documentRecord.total_pages} | Version {documentRecord.version} | Created{" "}
               {new Date(documentRecord.created_at).toLocaleString()}
             </p>
+            <p className="top-gap">
+              <span className={statusClass(documentRecord.status)}>{documentRecord.status}</span>
+            </p>
 
             <div className="button-row wrap top-gap">
-              <button
-                type="button"
-                className="small-button"
-                onClick={() => void queueTask("extract")}
-                disabled={runningAction === "extract"}
-              >
-                {runningAction === "extract" ? "Queuing..." : "Run extract"}
-              </button>
-              <button
-                type="button"
-                className="small-button"
-                onClick={() => void queueTask("embed")}
-                disabled={runningAction === "embed"}
-              >
-                {runningAction === "embed" ? "Queuing..." : "Run embed"}
-              </button>
               <a href={exportJsonUrl} className="link-button" target="_blank" rel="noreferrer">
                 Export JSON
               </a>
@@ -156,6 +137,7 @@ export default function DocumentDetailPage() {
 
         {activeTab === "ask" ? (
           <div className="top-gap">
+            {!canAsk ? <p className="muted">This document is not ready yet. Wait for processing to complete.</p> : null}
             <form className="form-stack" onSubmit={handleAsk}>
               <label className="form-label" htmlFor="doc-question">
                 Question
@@ -170,19 +152,7 @@ export default function DocumentDetailPage() {
                 placeholder="Ask a question about this document..."
               />
 
-              <label className="form-label" htmlFor="doc-top-k">
-                Top K (1-50)
-              </label>
-              <input
-                id="doc-top-k"
-                type="number"
-                min={1}
-                max={50}
-                value={topK}
-                onChange={(event) => setTopK(Number(event.currentTarget.value) || 1)}
-              />
-
-              <button type="submit" className="primary-button" disabled={asking || !documentRecord}>
+              <button type="submit" className="primary-button" disabled={asking || !canAsk}>
                 {asking ? "Asking..." : "Ask"}
               </button>
             </form>

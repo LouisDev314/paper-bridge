@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getJob } from "@/lib/api";
 
@@ -13,30 +13,40 @@ type BatchItem = {
 };
 
 function JobStatusPoller({ item, onComplete }: { item: BatchItem; onComplete: (status: string) => void }) {
-  const [completeStatus, setCompleteStatus] = useState<string | null>(null);
+  const hasReported = useRef(false);
 
   const { data: job, error } = useQuery({
     queryKey: ["job", item.jobId],
     queryFn: () => getJob(item.jobId),
-    refetchInterval: 2000,
-    enabled: completeStatus === null,
+    refetchInterval: (query) => {
+      const status = (query.state.data as { status?: string } | undefined)?.status;
+      if (status && ["done", "failed"].includes(status)) {
+        return false;
+      }
+      return 2000;
+    },
   });
 
   useEffect(() => {
-    if (job?.status && ["completed", "succeeded", "failed"].includes(job.status)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCompleteStatus(job.status);
+    if (hasReported.current) {
+      return;
+    }
+
+    if (job?.status && ["done", "failed"].includes(job.status)) {
+      hasReported.current = true;
       onComplete(job.status);
-    } else if (error) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCompleteStatus("failed");
+      return;
+    }
+
+    if (error) {
+      hasReported.current = true;
       onComplete("failed");
     }
   }, [job?.status, error, onComplete]);
 
-  const displayStatus = completeStatus || job?.status || "loading";
-  const isOk = displayStatus === "completed" || displayStatus === "succeeded";
-  const isErr = displayStatus === "failed" || Boolean(error);
+  const displayStatus = error ? "failed" : job?.status || "loading";
+  const isOk = displayStatus === "done";
+  const isErr = displayStatus === "failed";
   const statusClass = isOk ? "status-ok" : isErr ? "status-bad" : "status-neutral";
 
   return (
@@ -55,20 +65,22 @@ function JobStatusPoller({ item, onComplete }: { item: BatchItem; onComplete: (s
 
 export default function ProcessingPage() {
   const router = useRouter();
-  const [items, setItems] = useState<BatchItem[]>([]);
-  const [completedMap, setCompletedMap] = useState<Record<string, string>>({});
+  const [items] = useState<BatchItem[]>(() => {
+    if (typeof window === "undefined") {
+      return [];
+    }
 
-  useEffect(() => {
     try {
       const stored = sessionStorage.getItem("processing_batch");
-      if (stored) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setItems(JSON.parse(stored) as BatchItem[]);
+      if (!stored) {
+        return [];
       }
+      return JSON.parse(stored) as BatchItem[];
     } catch {
-      // Ignore invalid shapes
+      return [];
     }
-  }, []);
+  });
+  const [completedMap, setCompletedMap] = useState<Record<string, string>>({});
 
   const handleComplete = (jobId: string, status: string) => {
     setCompletedMap((prev) => ({ ...prev, [jobId]: status }));
@@ -140,11 +152,7 @@ export default function ProcessingPage() {
           </thead>
           <tbody>
             {items.map((item) => (
-              <JobStatusPoller
-                key={item.docId}
-                item={item}
-                onComplete={(status) => handleComplete(item.jobId, status)}
-              />
+              <JobStatusPoller key={item.docId} item={item} onComplete={(status) => handleComplete(item.jobId, status)} />
             ))}
           </tbody>
         </table>

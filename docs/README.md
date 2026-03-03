@@ -4,10 +4,9 @@ PaperBridge is a document intelligence system with a Next.js frontend and a Fast
 
 Core capabilities:
 - PDF upload + parse
-- Structured extraction jobs
-- Embedding jobs for RAG
+- Automatic extraction + embedding pipeline
 - Ask endpoint with citations
-- One-click pipeline automation (`upload -> extract -> embed`) with `auto_process=true`
+- Document status model (`uploaded | processing | ready | failed`)
 
 ## Architecture
 
@@ -34,7 +33,7 @@ FastAPI backend (separate host: Render/Fly/Railway/etc.)
 
 Pipeline flow:
 - Upload parses PDF synchronously.
-- If `auto_process=true`, backend queues a pipeline job.
+- Upload always queues/reuses a pipeline job.
 - Pipeline runs extraction then embedding, with idempotent skip/resume logic.
 - Poll with `GET /jobs/{job_id}`.
 

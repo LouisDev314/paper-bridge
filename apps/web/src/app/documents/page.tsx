@@ -4,21 +4,23 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ConfirmModal } from "@/components/confirm-modal";
-import { useJobs } from "@/components/providers/job-provider";
-import { deleteDocument, listDocuments, triggerEmbed, triggerExtract } from "@/lib/api";
+import { deleteDocument, listDocuments } from "@/lib/api";
 import type { DocumentResponse } from "@/lib/types";
 
 const PAGE_SIZE = 12;
 
-type TaskType = "extract" | "embed";
+function statusClass(status: DocumentResponse["status"]): string {
+  if (status === "ready") return "status status-ok";
+  if (status === "failed") return "status status-bad";
+  if (status === "processing") return "status status-neutral";
+  return "status status-neutral";
+}
 
 export default function DocumentsPage() {
-  const { registerJob } = useJobs();
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
   const [skip, setSkip] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [runningAction, setRunningAction] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DocumentResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -39,22 +41,6 @@ export default function DocumentsPage() {
   useEffect(() => {
     void loadDocuments();
   }, [loadDocuments]);
-
-  async function queueTask(documentId: string, task: TaskType) {
-    setError(null);
-    const key = `${documentId}:${task}`;
-    setRunningAction(key);
-
-    try {
-      const job = task === "extract" ? await triggerExtract(documentId) : await triggerEmbed(documentId);
-      registerJob(job);
-      await loadDocuments();
-    } catch (taskError) {
-      setError(taskError instanceof Error ? taskError.message : `Failed to queue ${task} job.`);
-    } finally {
-      setRunningAction(null);
-    }
-  }
 
   async function confirmDelete() {
     if (!deleteCandidate) {
@@ -86,7 +72,6 @@ export default function DocumentsPage() {
     return documents.filter((doc) => doc.filename.toLowerCase().includes(lowerQuery));
   }, [documents, searchQuery]);
 
-  // Next/prev button logic shouldn't count filtered docs because backend pagination is active
   const canPrev = skip > 0;
   const canNext = documents.length === PAGE_SIZE;
 
@@ -100,14 +85,14 @@ export default function DocumentsPage() {
           </button>
         </div>
 
-        <p className="muted">Browse uploaded files, queue processing jobs, and delete records.</p>
+        <p className="muted">Browse uploaded files, track readiness, and delete records.</p>
 
         <div className="top-gap">
           <input
             type="search"
             placeholder="Search by filename..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.currentTarget.value)}
+            onChange={(event) => setSearchQuery(event.currentTarget.value)}
             className="w-full flex-1 max-w-sm"
           />
         </div>
@@ -125,49 +110,34 @@ export default function DocumentsPage() {
                 <th>Filename</th>
                 <th>Pages</th>
                 <th>Version</th>
+                <th>Status</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredDocuments.map((document) => {
-                const extractKey = `${document.id}:extract`;
-                const embedKey = `${document.id}:embed`;
-
-                return (
-                  <tr key={document.id}>
-                    <td>
-                      <Link href={`/documents/${document.id}`}>{document.filename}</Link>
-                    </td>
-                    <td>{document.total_pages}</td>
-                    <td>{document.version}</td>
-                    <td>{new Date(document.created_at).toLocaleDateString()}</td>
-                    <td>
-                      <div className="button-row wrap">
-                        <button
-                          type="button"
-                          className="small-button"
-                          onClick={() => void queueTask(document.id, "extract")}
-                          disabled={runningAction === extractKey}
-                        >
-                          {runningAction === extractKey ? "Queuing..." : "Extract"}
-                        </button>
-                        <button
-                          type="button"
-                          className="small-button"
-                          onClick={() => void queueTask(document.id, "embed")}
-                          disabled={runningAction === embedKey}
-                        >
-                          {runningAction === embedKey ? "Queuing..." : "Embed"}
-                        </button>
-                        <button type="button" className="danger-button small-button" onClick={() => setDeleteCandidate(document)}>
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {filteredDocuments.map((document) => (
+                <tr key={document.id}>
+                  <td>
+                    <Link href={`/documents/${document.id}`}>{document.filename}</Link>
+                  </td>
+                  <td>{document.total_pages}</td>
+                  <td>{document.version}</td>
+                  <td>
+                    <span className={statusClass(document.status)}>{document.status}</span>
+                  </td>
+                  <td>{new Date(document.created_at).toLocaleDateString()}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="danger-button small-button"
+                      onClick={() => setDeleteCandidate(document)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         ) : null}
@@ -196,11 +166,7 @@ export default function DocumentsPage() {
       <ConfirmModal
         open={Boolean(deleteCandidate)}
         title="Delete document"
-        message={
-          deleteCandidate
-            ? `Delete '${deleteCandidate.filename}' and all related pages/jobs/extractions/embeddings?`
-            : ""
-        }
+        message={deleteCandidate ? `Delete '${deleteCandidate.filename}' and all related records?` : ""}
         busy={deleting}
         onCancel={() => setDeleteCandidate(null)}
         onConfirm={() => void confirmDelete()}

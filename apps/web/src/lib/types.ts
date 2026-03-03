@@ -11,13 +11,15 @@ export const DocumentResponseSchema = z.object({
   checksum_sha256: z.string(),
   version: z.number(),
   total_pages: z.number(),
+  status: z.enum(["uploaded", "processing", "ready", "failed"]),
   created_at: z.string(),
-  pipeline_job_id: z.string().nullish(),
 });
 export type DocumentResponse = z.infer<typeof DocumentResponseSchema>;
 
-export const UploadDocumentResponseSchema = DocumentResponseSchema;
-export type UploadDocumentResponse = DocumentResponse;
+export const UploadDocumentResponseSchema = DocumentResponseSchema.extend({
+  pipeline_job_id: z.string().nullish(),
+});
+export type UploadDocumentResponse = z.infer<typeof UploadDocumentResponseSchema>;
 
 export const JobResponseSchema = z.object({
   id: z.string(),

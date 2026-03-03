@@ -10,23 +10,19 @@ curl -s http://127.0.0.1:8000/health | jq
 
 ## Upload Single PDF
 
-Baseline upload only (parse, no pipeline):
+Upload always performs:
+1. file store + parse pages
+2. dedupe by checksum (always on)
+3. pipeline queue (`extract -> embed`)
 
 ```bash
 curl -s -F "file=@/absolute/path/to/sample.pdf" \
-  "http://127.0.0.1:8000/documents?dedupe=true&auto_process=false" | jq
-```
-
-Auto pipeline upload (`parse -> extract -> embed`):
-
-```bash
-curl -s -F "file=@/absolute/path/to/sample.pdf" \
-  "http://127.0.0.1:8000/documents?dedupe=true&auto_process=true" | jq
+  "http://127.0.0.1:8000/documents" | jq
 ```
 
 Response includes:
-- document fields (`id`, `filename`, `version`, etc.)
-- optional `pipeline_job_id`
+- document fields (`id`, `filename`, `version`, `status`, etc.)
+- `pipeline_job_id`
 
 ## Batch Upload
 
@@ -34,23 +30,29 @@ Response includes:
 curl -s \
   -F "files=@/absolute/path/to/a.pdf" \
   -F "files=@/absolute/path/to/b.pdf" \
-  "http://127.0.0.1:8000/documents/batch?dedupe=true&auto_process=true" | jq
+  "http://127.0.0.1:8000/documents/batch" | jq
 ```
 
-Returns a list of upload responses, each with optional `pipeline_job_id`.
+Returns a list of upload responses, each with `pipeline_job_id`.
 
-## Manual Jobs (Backward Compatible)
+## Documents
 
-Queue extraction:
+List:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/documents/<document_id>/extract" | jq
+curl -s "http://127.0.0.1:8000/documents?skip=0&limit=20" | jq
 ```
 
-Queue embedding:
+Each document includes a derived status:
+- `uploaded`
+- `processing`
+- `ready`
+- `failed`
+
+Delete:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/documents/<document_id>/embed" | jq
+curl -i -X DELETE "http://127.0.0.1:8000/documents/<document_id>"
 ```
 
 ## Poll Jobs
@@ -66,10 +68,12 @@ Pipeline jobs return:
 
 ## Ask
 
+`top_k` is backend-controlled (`qa_top_k`, default `5`) and not part of request payload.
+
 ```bash
 curl -s -X POST http://127.0.0.1:8000/ask \
   -H 'content-type: application/json' \
-  -d '{"question":"What does OVG stand for?","top_k":6}' | jq
+  -d '{"question":"What does OVG stand for?"}' | jq
 ```
 
 Scoped ask:
@@ -77,7 +81,7 @@ Scoped ask:
 ```bash
 curl -s -X POST http://127.0.0.1:8000/ask \
   -H 'content-type: application/json' \
-  -d '{"question":"Summarize section 2","doc_ids":["<document_id>"],"top_k":6}' | jq
+  -d '{"question":"Summarize section 2","doc_ids":["<document_id>"]}' | jq
 ```
 
 ## Export + Review

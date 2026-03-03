@@ -198,8 +198,7 @@ async def ensure_pipeline_job(document_id: UUID, db: AsyncSession, request_id: s
 
 
 async def run_pipeline_job(job_id: UUID, request_id: str | None = None) -> None:
-    from app.routers.embed import run_embed_job
-    from app.routers.extract import run_extraction_job
+    from app.services.processing_jobs import run_embedding_job, run_extraction_job
 
     async with AsyncSessionLocal() as db:
         pipeline_job = await db.get(Job, job_id)
@@ -287,7 +286,7 @@ async def run_pipeline_job(job_id: UUID, request_id: str | None = None) -> None:
                 if embed_job.status == "processing":
                     embed_job = await _wait_for_job_terminal(db, embed_job.id)
                 else:
-                    await run_embed_job(embed_job.id)
+                    await run_embedding_job(embed_job.id)
                     embed_job = await db.get(Job, embed_job.id)
                     if embed_job:
                         await db.refresh(embed_job)

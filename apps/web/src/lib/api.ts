@@ -117,13 +117,12 @@ export async function getDocument(documentId: string): Promise<DocumentResponse>
   return apiRequest<DocumentResponse>(`/documents/${encodeURIComponent(documentId)}`, {}, DocumentResponseSchema);
 }
 
-export async function uploadDocument(file: File, dedupe = true, autoProcess = false): Promise<UploadDocumentResponse> {
+export async function uploadDocument(file: File): Promise<UploadDocumentResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const params = new URLSearchParams({ dedupe: String(dedupe), auto_process: String(autoProcess) });
   return apiRequest<UploadDocumentResponse>(
-    `/documents?${params.toString()}`,
+    "/documents",
     {
       method: "POST",
       body: formData,
@@ -132,18 +131,13 @@ export async function uploadDocument(file: File, dedupe = true, autoProcess = fa
   );
 }
 
-export async function uploadDocumentsBatch(
-  files: File[],
-  dedupe = true,
-  autoProcess = false,
-): Promise<UploadDocumentResponse[]> {
+export async function uploadDocumentsBatch(files: File[]): Promise<UploadDocumentResponse[]> {
   const formData = new FormData();
   for (const file of files) {
     formData.append("files", file);
   }
-  const params = new URLSearchParams({ dedupe: String(dedupe), auto_process: String(autoProcess) });
   return apiRequest<UploadDocumentResponse[]>(
-    `/documents/batch?${params.toString()}`,
+    "/documents/batch",
     {
       method: "POST",
       body: formData,
@@ -158,31 +152,11 @@ export async function deleteDocument(documentId: string): Promise<void> {
   });
 }
 
-export async function triggerExtract(documentId: string): Promise<JobResponse> {
-  return apiRequest<JobResponse>(
-    `/documents/${encodeURIComponent(documentId)}/extract`,
-    {
-      method: "POST",
-    },
-    JobResponseSchema,
-  );
-}
-
-export async function triggerEmbed(documentId: string): Promise<JobResponse> {
-  return apiRequest<JobResponse>(
-    `/documents/${encodeURIComponent(documentId)}/embed`,
-    {
-      method: "POST",
-    },
-    JobResponseSchema,
-  );
-}
-
 export async function getJob(jobId: string): Promise<JobResponse> {
   return apiRequest<JobResponse>(`/jobs/${encodeURIComponent(jobId)}`, {}, JobResponseSchema);
 }
 
-export async function askQuestion(question: string, docIds?: string[], topK?: number): Promise<AskResponse> {
+export async function askQuestion(question: string, docIds?: string[]): Promise<AskResponse> {
   const body: JsonBody = {
     question,
   };
@@ -192,10 +166,6 @@ export async function askQuestion(question: string, docIds?: string[], topK?: nu
   } else if (docIds && docIds.length === 0) {
     // Specifically handle the case where we want all documents according to backend
     body.doc_ids = null;
-  }
-
-  if (typeof topK === "number" && Number.isFinite(topK)) {
-    body.top_k = topK;
   }
 
   return apiRequest<AskResponse>("/ask", jsonInit("POST", body), AskResponseSchema);

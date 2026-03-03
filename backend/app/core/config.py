@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     chunk_size_tokens: int = Field(default=800, ge=100, le=4000)
     chunk_overlap_tokens: int = Field(default=120, ge=0, le=1000)
-    rag_top_k: int = Field(default=6, ge=1, le=25)
+    qa_top_k: int = Field(default=5, ge=1, le=25)
     rag_max_top_k: int = Field(default=15, ge=1, le=50)
     rag_vector_candidates: int = Field(default=50, ge=5, le=200)
     rag_lexical_weight: float = Field(default=0.35, ge=0.0, le=1.0)

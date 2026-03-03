@@ -58,7 +58,7 @@ async def retrieve_chunks(
     question: str,
     question_embedding: list[float],
     document_ids: list[UUID] | None = None,
-    top_k: int = settings.rag_top_k,
+    top_k: int = settings.qa_top_k,
     vector_candidates: int = settings.rag_vector_candidates,
     lexical_weight: float = settings.rag_lexical_weight,
     request_id: str | None = None,

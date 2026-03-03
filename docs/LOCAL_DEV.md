@@ -69,12 +69,12 @@ Smoke command (from repo root):
 
 ```bash
 cd backend
-uv run python ../scripts/smoke_pipeline.py --file /absolute/path/to/sample.pdf --auto-process
+uv run python ../scripts/smoke_pipeline.py --file /absolute/path/to/sample.pdf
 ```
 
 This command:
 - uploads the PDF
-- queues the pipeline job
+- queues or reuses the pipeline job
 - polls until job reaches terminal state
 
 Then query:
@@ -82,7 +82,7 @@ Then query:
 ```bash
 curl -s -X POST http://127.0.0.1:8000/ask \
   -H 'content-type: application/json' \
-  -d '{"question":"Summarize the main finding in one sentence.","top_k":6}' | jq
+  -d '{"question":"Summarize the main finding in one sentence."}' | jq
 ```
 
 ## Common Errors

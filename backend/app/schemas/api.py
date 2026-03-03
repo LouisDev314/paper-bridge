@@ -1,7 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 from datetime import datetime
+from pydantic import BaseModel, Field
 
 class DocumentResponse(BaseModel):
     id: UUID
@@ -9,6 +9,7 @@ class DocumentResponse(BaseModel):
     checksum_sha256: str
     version: int
     total_pages: int
+    status: Literal["uploaded", "processing", "ready", "failed"]
     created_at: datetime
 
     class Config:

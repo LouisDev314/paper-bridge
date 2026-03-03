@@ -14,10 +14,10 @@ class AskRequest(BaseModel):
                         "9c6c9f55-4d4f-4712-bf81-31e72f7a9b32",
                         "117082e7-9f8d-477d-a64b-599f26ff74ca",
                     ],
-                    "top_k": 8,
                 }
             ]
         },
+        extra="forbid",
     )
 
     question: str = Field(..., min_length=3, max_length=4000)
@@ -26,7 +26,6 @@ class AskRequest(BaseModel):
         validation_alias=AliasChoices("doc_ids", "document_ids"),
         description="Optional list of document IDs to scope retrieval. If omitted, searches all embedded documents.",
     )
-    top_k: Optional[int] = Field(default=None, ge=1, le=50)
 
     @field_validator("doc_ids")
     @classmethod

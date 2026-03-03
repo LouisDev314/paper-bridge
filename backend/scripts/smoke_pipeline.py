@@ -27,12 +27,9 @@ def _poll_job(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke-test upload + optional auto pipeline orchestration.")
+    parser = argparse.ArgumentParser(description="Smoke-test upload + automatic pipeline orchestration.")
     parser.add_argument("--file", required=True, help="Path to a PDF file")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend base URL")
-    parser.add_argument("--auto-process", action="store_true", help="Queue extract+embed pipeline automatically")
-    parser.add_argument("--dedupe", action="store_true", default=True, help="Enable checksum dedupe")
-    parser.add_argument("--no-dedupe", action="store_false", dest="dedupe", help="Disable checksum dedupe")
     args = parser.parse_args()
 
     pdf_path = Path(args.file).expanduser().resolve()
@@ -45,10 +42,6 @@ def main() -> int:
         with pdf_path.open("rb") as fd:
             upload_resp = client.post(
                 f"{base_url}/documents",
-                params={
-                    "dedupe": str(args.dedupe).lower(),
-                    "auto_process": str(args.auto_process).lower(),
-                },
                 files={"file": (pdf_path.name, fd, "application/pdf")},
             )
         upload_resp.raise_for_status()
@@ -58,11 +51,13 @@ def main() -> int:
         print(f"document_id={document_id}")
         print(f"pipeline_job_id={pipeline_job_id}")
 
-        if args.auto_process and pipeline_job_id:
-            final = _poll_job(client, base_url, pipeline_job_id)
-            print(f"pipeline_final_status={final.get('status')}")
-            if final.get("status") != "done":
-                raise RuntimeError(f"Pipeline failed: {final.get('error_message')}")
+        if not pipeline_job_id:
+            raise RuntimeError("Upload response is missing pipeline_job_id.")
+
+        final = _poll_job(client, base_url, pipeline_job_id)
+        print(f"pipeline_final_status={final.get('status')}")
+        if final.get("status") != "done":
+            raise RuntimeError(f"Pipeline failed: {final.get('error_message')}")
 
     return 0
 

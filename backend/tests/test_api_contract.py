@@ -37,7 +37,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("Only PDF files are supported", resp.text)
 
     def test_ask_enforces_validation(self) -> None:
-        resp = self.client.post("/ask", json={"question": "ok", "top_k": 999})
+        resp = self.client.post("/ask", json={"question": "What is OVG?", "top_k": 999})
         self.assertEqual(resp.status_code, 422)
 
     def test_ask_happy_path_returns_citations(self) -> None:
@@ -66,7 +66,7 @@ class ApiContractTests(unittest.TestCase):
             return [[0.1] * 1536]
 
         async def _retrieve(*args, **kwargs):
-            self.assertEqual(kwargs["top_k"], 15)  # clamped from request
+            self.assertEqual(kwargs["top_k"], 5)
             return retrieved
 
         async def _answer(*args, **kwargs):
@@ -88,12 +88,13 @@ class ApiContractTests(unittest.TestCase):
 
         with (
             patch("app.routers.ask.generate_embeddings", side_effect=_embed),
+            patch("app.routers.ask.ready_document_ids", return_value={doc_id}),
             patch("app.routers.ask.retrieve_chunks", side_effect=_retrieve),
             patch("app.routers.ask.answer_question", side_effect=_answer),
         ):
             resp = self.client.post(
                 "/ask",
-                json={"question": "What does OVG stand for?", "top_k": 50, "doc_ids": [str(doc_id)]},
+                json={"question": "What does OVG stand for?", "doc_ids": [str(doc_id)]},
             )
 
         self.assertEqual(resp.status_code, 200)
