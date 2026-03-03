@@ -34,14 +34,9 @@ export const JobResponseSchema = z.object({
 export type JobResponse = z.infer<typeof JobResponseSchema>;
 
 export const CitationSchema = z.object({
-  chunk_id: z.string(),
-  document_id: z.string(),
+  filename: z.string(),
   page_start: z.number(),
   page_end: z.number(),
-  pdf_page_start: z.number(),
-  pdf_page_end: z.number(),
-  text: z.string(),
-  similarity_score: z.number().nullish(),
 });
 export type Citation = z.infer<typeof CitationSchema>;
 

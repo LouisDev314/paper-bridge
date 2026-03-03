@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_request_id, logger
-from app.db.models import Embedding
+from app.db.models import Document, Embedding
 
 STOPWORDS = {
     "a",
@@ -31,6 +31,7 @@ STOPWORDS = {
 @dataclass
 class RetrievedChunk:
     embedding: Embedding
+    filename: str
     distance: float | None
     vector_similarity: float | None
     lexical_score: float
@@ -80,7 +81,10 @@ async def retrieve_chunks(
     await db.execute(text(f"SET LOCAL ivfflat.probes = {settings.vector_ivfflat_probes}"))
 
     distance = Embedding.embedding.cosine_distance(question_embedding).label("distance")
-    vector_stmt = select(Embedding, distance)
+    vector_stmt = (
+        select(Embedding, Document.filename, distance)
+        .join(Document, Document.id == Embedding.document_id)
+    )
     if document_ids:
         vector_stmt = vector_stmt.where(Embedding.document_id.in_(document_ids))
     vector_stmt = vector_stmt.order_by(distance.asc()).limit(safe_vector_candidates)
@@ -110,7 +114,7 @@ async def retrieve_chunks(
         logger.warning("retrieval_lexical_rerank_failed request_id=%s error=%s", req_id, exc)
 
     retrieved: list[RetrievedChunk] = []
-    for embedding_row, dist in vector_rows:
+    for embedding_row, filename, dist in vector_rows:
         content_lower = embedding_row.content.lower()
         token_hits = 0
         if keyword_tokens:
@@ -125,6 +129,7 @@ async def retrieve_chunks(
         retrieved.append(
             RetrievedChunk(
                 embedding=embedding_row,
+                filename=filename,
                 distance=float(dist) if dist is not None else None,
                 vector_similarity=vector_similarity,
                 lexical_score=lexical_score,

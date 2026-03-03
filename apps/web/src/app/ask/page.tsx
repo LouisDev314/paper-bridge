@@ -97,7 +97,11 @@ function AskPageContent() {
     if (!result) return;
     let md = `**Question**: ${question}\n\n**Answer**: ${result.answer}\n\n### Citations\n`;
     result.citations.forEach((citation, index) => {
-      md += `\n[${index + 1}] Document: ${citation.document_id} (Pages ${citation.pdf_page_start}-${citation.pdf_page_end})\n> ${citation.text.trim()}\n`;
+      const pages =
+        citation.page_start === citation.page_end
+          ? `p. ${citation.page_start}`
+          : `pp. ${citation.page_start}-${citation.page_end}`;
+      md += `\n[${index + 1}] ${citation.filename} (${pages})\n`;
     });
     await navigator.clipboard.writeText(md);
     setCopiedMarkdown(true);
@@ -141,14 +145,14 @@ function AskPageContent() {
           </span>
         </div>
 
-        <label className="flex items-center gap-2 p-3 bg-slate-50 border rounded-lg mb-4 cursor-pointer hover:bg-slate-100 transition-colors">
-          <span className="font-medium text-slate-900">All ready documents</span>
+        <label className="flex items-start gap-3 p-3 bg-slate-50 border rounded-lg mb-4 cursor-pointer hover:bg-slate-100 transition-colors">
           <input
             type="checkbox"
             checked={selectableDocumentIds.length === 0}
             onChange={(event) => toggleAllDocuments(event.target.checked)}
-            className="w-4 h-4 text-blue-600"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600"
           />
+          <span className="font-medium text-slate-900">All ready documents</span>
         </label>
 
         {loadingDocs ? <p className="text-slate-500 animate-pulse">Loading documents...</p> : null}
@@ -156,31 +160,34 @@ function AskPageContent() {
         {!loadingDocs && documents.length === 0 ? <p className="text-slate-500">No documents available.</p> : null}
 
         {!loadingDocs && documents.length > 0 ? (
-          <ul className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+          <ul className="space-y-2 max-h-[400px] overflow-y-auto pr-2 list-none">
             {documents.map((document) => {
               const ready = document.status === 'ready';
               const createdDate = new Date(document.created_at).toLocaleString();
               return (
                 <li key={document.id}>
                   <label
-                    className={`flex items-start space-x-3 p-3 border rounded-lg transition-colors ${
-                      ready ? 'cursor-pointer hover:bg-slate-50' : 'cursor-not-allowed bg-slate-50'
-                    }`}>
+                    className={[
+                      'flex inline-row items-start gap-3 p-3 border rounded-lg transition-colors select-none',
+                      ready
+                        ? 'cursor-pointer hover:bg-slate-50'
+                        : 'cursor-not-allowed bg-slate-50 opacity-70 pointer-events-none',
+                    ].join(' ')}>
                     <input
                       type="checkbox"
                       checked={selectableDocumentIds.includes(document.id)}
                       onChange={() => toggleDocument(document.id)}
                       disabled={!ready}
-                      className="w-4 h-4 mt-1 text-blue-600"
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600"
                     />
-                    <div className="flex flex-col gap-1">
-                      <span className="font-medium text-slate-900 break-all">
-                        {document.filename} (v{document.version})
-                      </span>
-                      <span className="text-xs text-slate-500">Created {createdDate}</span>
-                      <span className={statusClass(document.status)}>{document.status}</span>
-                      {!ready ? <span className="text-xs text-slate-500">Not selectable until ready.</span> : null}
-                    </div>
+                    <p className="m-0 font-medium leading-snug text-slate-900 break-words">{document.filename}</p>
+                    <p className="m-0 mt-1 text-xs text-slate-500">
+                      Version {document.version} (created {createdDate})
+                    </p>
+                    {!ready ? (
+                      <span className="mt-1 inline-block text-xs text-slate-500">Not selectable until ready.</span>
+                    ) : null}
+                    <span className={`${statusClass(document.status)} self-start`}>{document.status}</span>
                   </label>
                 </li>
               );

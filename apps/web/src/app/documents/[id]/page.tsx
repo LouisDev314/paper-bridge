@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { CitationList } from "@/components/citation-list";
 import { JobList } from "@/components/job-list";
 import { useJobs } from "@/components/providers/job-provider";
-import { askQuestion, getDocument, getExportUrl } from "@/lib/api";
+import { askQuestion, getDocument, getDownloadUrl } from "@/lib/api";
 import type { AskResponse, DocumentResponse } from "@/lib/types";
 
 type TabKey = "ask" | "jobs";
@@ -74,8 +74,7 @@ export default function DocumentDetailPage() {
     }
   }
 
-  const exportJsonUrl = getExportUrl(documentId, "json");
-  const exportCsvUrl = getExportUrl(documentId, "csv");
+  const downloadUrl = getDownloadUrl(documentId);
   const canAsk = documentRecord?.status === "ready";
 
   return (
@@ -88,27 +87,25 @@ export default function DocumentDetailPage() {
         {!loading && documentRecord ? (
           <>
             <div className="inline-row spread">
-              <h1>{documentRecord.filename}</h1>
+              <h1 className="m-0 break-words">{documentRecord.filename}</h1>
               <button type="button" className="secondary-button" onClick={() => void refreshDocument()}>
                 Refresh
               </button>
             </div>
 
             <p className="muted mono">Document ID: {documentRecord.id}</p>
-            <p className="muted">
-              Pages {documentRecord.total_pages} | Version {documentRecord.version} | Created{" "}
-              {new Date(documentRecord.created_at).toLocaleString()}
-            </p>
-            <p className="top-gap">
+            <div className="muted flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <span>Pages {documentRecord.total_pages}</span>
+              <span>Version {documentRecord.version}</span>
+              <span>Created {new Date(documentRecord.created_at).toLocaleString()}</span>
+            </div>
+            <p className="top-gap m-0">
               <span className={statusClass(documentRecord.status)}>{documentRecord.status}</span>
             </p>
 
             <div className="button-row wrap top-gap">
-              <a href={exportJsonUrl} className="link-button" target="_blank" rel="noreferrer">
-                Export JSON
-              </a>
-              <a href={exportCsvUrl} className="link-button" target="_blank" rel="noreferrer">
-                Export CSV
+              <a href={downloadUrl} className="link-button">
+                Download
               </a>
             </div>
           </>
@@ -160,7 +157,7 @@ export default function DocumentDetailPage() {
             {askResult ? (
               <div className="result-card top-gap">
                 <h3>Answer</h3>
-                <p>{askResult.answer}</p>
+                <div className="whitespace-pre-wrap">{askResult.answer}</div>
                 <h3>Citations</h3>
                 <CitationList citations={askResult.citations} />
               </div>

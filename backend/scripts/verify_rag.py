@@ -12,6 +12,8 @@ def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
 
+NOT_FOUND_ANSWER = "Insufficient context in the provided documents. Please ask a narrower question."
+
 
 def _poll_job(client: httpx.Client, base_url: str, job_id: str, timeout_s: int = 900) -> dict:
     deadline = time.time() + timeout_s
@@ -58,12 +60,12 @@ def _ask_and_assert(
 
     print(f"Q: {question}")
     print(f"A: {answer}")
-    print(f"Citations: {[citation.get('chunk_id') for citation in citations]}")
+    print(f"Citations: {[citation.get('filename') for citation in citations]}")
 
     _assert(citations, f"Expected citations for question: {question}")
     for citation in citations:
-        page_start = citation.get("pdf_page_start")
-        page_end = citation.get("pdf_page_end")
+        page_start = citation.get("page_start")
+        page_end = citation.get("page_end")
         _assert(
             isinstance(page_start, int) and isinstance(page_end, int),
             f"Citation pages missing for question: {question}",
@@ -77,7 +79,7 @@ def _ask_and_assert(
         lowered = answer.lower()
         _assert(any(re.search(pattern, lowered) for pattern in expected_patterns), f"Answer mismatch for question: {question}")
     else:
-        _assert(answer == "Not found in the provided documents.", f"Expected not-found answer for question: {question}")
+        _assert(answer == NOT_FOUND_ANSWER, f"Expected not-found answer for question: {question}")
 
 
 TEST_CASES = [

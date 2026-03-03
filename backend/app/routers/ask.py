@@ -8,8 +8,8 @@ from app.schemas.api import ErrorResponse
 from app.schemas.qa import AskRequest, AskResponse
 from app.services.document_status import ready_document_ids
 from app.services.embedder import generate_embeddings
+from app.services.qa import NOT_FOUND_ANSWER, answer_question
 from app.services.retriever import RetrievedChunk, retrieve_chunks
-from app.services.qa import answer_question
 
 router = APIRouter(tags=["ask"])
 
@@ -41,7 +41,7 @@ async def global_ask(req: AskRequest, request: Request, db: AsyncSession = Depen
                 [str(doc_id) for doc_id in req.doc_ids],
             )
             return AskResponse(
-                answer="Not found in the provided documents.",
+                answer=NOT_FOUND_ANSWER,
                 citations=[],
             )
 
@@ -73,7 +73,7 @@ async def global_ask(req: AskRequest, request: Request, db: AsyncSession = Depen
 
     if not chunks:
         return AskResponse(
-            answer="Not found in the provided documents.",
+            answer=NOT_FOUND_ANSWER,
             citations=[],
         )
 

@@ -35,14 +35,9 @@ class AskRequest(BaseModel):
         return list(dict.fromkeys(value))
 
 class Citation(BaseModel):
-    chunk_id: str
-    document_id: UUID
+    filename: str
     page_start: int
     page_end: int
-    pdf_page_start: int
-    pdf_page_end: int
-    text: str
-    similarity_score: Optional[float] = None
 
 class AskResponse(BaseModel):
     answer: str

@@ -54,6 +54,7 @@ class ApiContractTests(unittest.TestCase):
         retrieved = [
             RetrievedChunk(
                 embedding=fake_embedding,
+                filename="directive060.pdf",
                 distance=0.2,
                 vector_similarity=0.8,
                 lexical_score=0.5,
@@ -74,14 +75,9 @@ class ApiContractTests(unittest.TestCase):
                 answer="OVG means overall vent gas.",
                 citations=[
                     Citation(
-                        chunk_id="p5-c0",
-                        document_id=doc_id,
+                        filename="directive060.pdf",
                         page_start=5,
                         page_end=5,
-                        pdf_page_start=5,
-                        pdf_page_end=5,
-                        text="OVG overall vent gas",
-                        similarity_score=0.72,
                     )
                 ],
             )
@@ -101,7 +97,29 @@ class ApiContractTests(unittest.TestCase):
         payload = resp.json()
         self.assertIn("overall vent gas", payload["answer"].lower())
         self.assertTrue(payload["citations"])
-        self.assertEqual(payload["citations"][0]["pdf_page_start"], 5)
+        self.assertEqual(payload["citations"][0]["page_start"], 5)
+
+    def test_document_download_redirects_to_signed_url(self) -> None:
+        doc_id = uuid4()
+        signed_url = "https://example.supabase.co/storage/v1/object/sign/paperbridge-documents/a.pdf?token=abc"
+
+        class FakeDb:
+            async def get(self, _model, _document_id):
+                return SimpleNamespace(
+                    id=doc_id,
+                    filename="directive060.pdf",
+                    storage_key="documents/abc/v1/directive060.pdf",
+                )
+
+        async def _download_db_dependency():
+            yield FakeDb()
+
+        app.dependency_overrides[get_db] = _download_db_dependency
+        with patch("app.routers.documents.storage_service.create_signed_download_url", return_value=signed_url):
+            resp = self.client.get(f"/documents/{doc_id}/download", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 307)
+        self.assertEqual(resp.headers.get("location"), signed_url)
 
 
 if __name__ == "__main__":

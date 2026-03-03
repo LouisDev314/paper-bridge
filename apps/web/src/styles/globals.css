@@ -298,7 +298,6 @@ button:disabled {
 }
 
 .job-list,
-.citation-list,
 .selection-list {
   list-style: none;
   padding: 0;
@@ -308,7 +307,6 @@ button:disabled {
 }
 
 .job-row,
-.citation-card,
 .selection-item {
   border: 1px solid var(--panel-border);
   border-radius: 10px;

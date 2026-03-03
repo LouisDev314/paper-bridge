@@ -188,6 +188,6 @@ export async function submitExtractionReview(
   );
 }
 
-export function getExportUrl(documentId: string, format: "json" | "csv"): string {
-  return buildApiPath(`/documents/${encodeURIComponent(documentId)}/export.${format}`);
+export function getDownloadUrl(documentId: string): string {
+  return buildApiPath(`/documents/${encodeURIComponent(documentId)}/download`);
 }

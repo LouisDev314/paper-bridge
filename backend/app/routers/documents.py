@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,6 +28,7 @@ router = APIRouter(tags=["documents"])
 
 ALLOWED_PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf", "application/octet-stream"}
 UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_URL_TTL_SECONDS = 120
 
 
 def _safe_filename(filename: str) -> str:
@@ -313,6 +315,38 @@ async def get_document(document_id: UUID, db: AsyncSession = Depends(get_db)):
 
     status_map = await compute_document_statuses(db, [doc.id])
     return _to_document_response(doc, status_map.get(doc.id, DOCUMENT_STATUS_UPLOADED))
+
+
+@router.get(
+    "/documents/{document_id}/download",
+    response_class=RedirectResponse,
+    summary="Download the original uploaded PDF via short-lived signed URL",
+    responses={404: {"model": ErrorResponse, "description": "Document not found"}},
+)
+async def download_document(document_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    request_id = getattr(request.state, "request_id", None)
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        signed_url = await run_in_threadpool(
+            storage_service.create_signed_download_url,
+            doc.storage_key,
+            expires_in=DOWNLOAD_URL_TTL_SECONDS,
+            download_filename=doc.filename,
+        )
+    except Exception as exc:
+        logger.error(
+            "document_download_signed_url_failed request_id=%s document_id=%s storage_key=%s error=%s",
+            request_id,
+            document_id,
+            doc.storage_key,
+            exc,
+        )
+        raise HTTPException(status_code=502, detail="Failed to prepare document download.") from exc
+
+    return RedirectResponse(url=signed_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @router.delete(
