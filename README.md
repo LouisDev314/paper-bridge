@@ -54,26 +54,26 @@ The goal is to demonstrate a realistic AI platform architecture suitable for bac
 flowchart LR
     subgraph Client
         UI[Next.js Frontend]
-        Dev[API Client / cURL]
+        Dev[API Client - cURL]
     end
 
     subgraph Backend[FastAPI Backend]
         UP[Upload Service]
         PARSE[PDF Parser & Chunker]
         EMB[Embedding Worker]
-        RAG[Q&A / RAG Service]
+        RAG[Q&A - RAG Service]
         EXT[Schema Extraction Service]
         VAL[Validation Layer]
     end
 
-    subgraph DB[Supabase PostgreSQL + pgvector]
+    subgraph DB[Supabase Postgres + pgvector]
         METADATA[(documents, pages, chunks)]
         VEC[(pgvector index)]
         FIELDS[(extracted_fields, validation_status)]
     end
 
     subgraph OpenAI[OpenAI API]
-        LLM[LLM (chat/completions)]
+        LLM[LLM - Chat Completions]
         EMBAPI[Embeddings API]
     end
 
