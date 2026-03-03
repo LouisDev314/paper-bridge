@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getJob } from "@/lib/api";
-import { readJobsFromStorage, writeJobsToStorage } from "@/lib/job-storage";
 import type { JobResponse } from "@/lib/types";
 
 const ACTIVE_STATUSES = new Set(["queued", "processing"]);
@@ -27,11 +26,7 @@ function mergeJob(existing: JobResponse[], incoming: JobResponse): JobResponse[]
 }
 
 export function useJobTracker() {
-  const [jobs, setJobs] = useState<JobResponse[]>(() => sortJobs(readJobsFromStorage()));
-
-  useEffect(() => {
-    writeJobsToStorage(jobs);
-  }, [jobs]);
+  const [jobs, setJobs] = useState<JobResponse[]>([]);
 
   const registerJob = useCallback((job: JobResponse) => {
     setJobs((current) => mergeJob(current, job));
