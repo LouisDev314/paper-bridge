@@ -3,9 +3,13 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import React, { FormEvent, useCallback, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
 import { CitationList } from "@/components/citation-list";
 import { askQuestion, listDocuments } from "@/lib/api";
+import { answerMarkdownToPlainText } from "@/lib/answer-format";
 import type { AskResponse, DocumentResponse } from "@/lib/types";
 
 function statusClass(status: DocumentResponse["status"]): string {
@@ -21,7 +25,6 @@ function AskPageContent() {
 
   const [question, setQuestion] = useState("");
   const [copiedAnswer, setCopiedAnswer] = useState(false);
-  const [copiedMarkdown, setCopiedMarkdown] = useState(false);
   const selectedDocumentIds = useMemo(() => {
     const docIdsParam = searchParams.get("docIds");
     if (!docIdsParam) {
@@ -82,13 +85,13 @@ function AskPageContent() {
   async function handleAsk(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCopiedAnswer(false);
-    setCopiedMarkdown(false);
     submitQuestion();
   }
 
   async function copyAnswer() {
     if (!result) return;
-    await navigator.clipboard.writeText(result.answer);
+    const plainText = answerMarkdownToPlainText(result.answer);
+    await navigator.clipboard.writeText(plainText);
     setCopiedAnswer(true);
     setTimeout(() => setCopiedAnswer(false), 2000);
   }
@@ -192,7 +195,9 @@ function AskPageContent() {
                 {copiedAnswer ? 'Copied!' : 'Copy Answer'}
               </button>
           </div>
-          <div className="prose max-w-none text-slate-800 leading-relaxed whitespace-pre-wrap">{result.answer}</div>
+          <div className="prose max-w-none text-slate-800 leading-relaxed">
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{result.answer}</ReactMarkdown>
+          </div>
 
           <div className="mt-8 pt-6 border-t">
             <h3 className="mb-4 text-lg font-semibold text-slate-900">Sources ({result.citations.length})</h3>

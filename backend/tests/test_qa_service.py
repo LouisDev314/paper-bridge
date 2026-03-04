@@ -16,6 +16,7 @@ from app.services.retriever import RetrievedChunk
 def _make_chunk(chunk_id: str, page_start: int, page_end: int | None = None, filename: str = "directive060.pdf") -> RetrievedChunk:
     doc_id = uuid4()
     embedding = SimpleNamespace(
+        id=uuid4(),
         chunk_id=chunk_id,
         document_id=doc_id,
         pdf_page_start=page_start,
@@ -117,3 +118,52 @@ class AnswerQuestionFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.answer, NOT_FOUND_ANSWER)
         self.assertEqual(result.citations, [])
+
+    async def test_answer_question_precision_retry_adds_numeric_threshold(self) -> None:
+        chunks = [_make_chunk("p5-c0", 5)]
+        chunks[0].embedding.content = "Solution gas may be conserved at 900 m3/day with NPV greater than -$55,000."
+        responses = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"found": true, "answer_markdown": '
+                                '"Solution gas flaring is allowed under certain conditions.[[chunk:p5-c0]]"}'
+                            )
+                        )
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"found": true, "answer_markdown": '
+                                '"Solution gas flaring is allowed when volumes are 900 m3/day and NPV is greater than -$55,000.[[chunk:p5-c0]]"}'
+                            )
+                        )
+                    )
+                ]
+            ),
+        ]
+
+        call_count = {"value": 0}
+
+        async def _fake_create(*args, **kwargs):
+            idx = call_count["value"]
+            call_count["value"] += 1
+            return responses[min(idx, len(responses) - 1)]
+
+        with patch("app.services.qa.openai_client.chat.completions.create", side_effect=_fake_create):
+            result = await answer_question(
+                "When is solution gas flaring allowed under Directive 060?",
+                chunks,
+                request_id="test-retry-request-id",
+            )
+
+        self.assertGreaterEqual(call_count["value"], 2)
+        self.assertIn("900 m3/day", result.answer)
+        self.assertIn("-$55,000", result.answer)
+        self.assertTrue(result.citations)
