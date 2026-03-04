@@ -19,6 +19,10 @@ PRECISION_QUESTION_RE = re.compile(
     r"\b(allowed|must|required|requirement|threshold|limit|npv|gor|hours?|window|time|when)\b",
     re.IGNORECASE,
 )
+MULTI_REQUIREMENT_QUESTION_RE = re.compile(
+    r"\b(before|notify|residents?|planned|incineration|enclosed combustion|requirements?|allowed|npv|economic|conservation|gor|h2s)\b",
+    re.IGNORECASE,
+)
 PROCEDURAL_QUESTION_RE = re.compile(
     r"\b(notify|notification|public|planned|report|field centre|field center|incineration|enclosed combustion)\b",
     re.IGNORECASE,
@@ -27,6 +31,24 @@ NUMERIC_EVIDENCE_RE = re.compile(
     r"\d|m3/day|m³/day|m3/m3|m³/m³|\$|npv|gor|hours?|days?|h2s",
     re.IGNORECASE,
 )
+KEY_RULE_UNIT_TERMS = ("m3/day", "m3/m3", "hours", "$")
+KEY_RULE_ANCHOR_TERMS = (
+    "npv",
+    "gor",
+    "h2s",
+    "economic",
+    "conservation",
+    "field centre",
+    "field center",
+    "notification",
+    "resident",
+    "school",
+    "unresolved concerns",
+    "incineration",
+    "enclosed combustion",
+)
+KEY_RULE_BONUS_PER_MATCH = 0.05
+KEY_RULE_BONUS_CAP = 0.30
 
 openai_client = AsyncOpenAI(
     api_key=settings.openai_api_key,
@@ -162,6 +184,28 @@ def _answer_has_number(answer_markdown: str) -> bool:
     return bool(re.search(r"\d", without_markers))
 
 
+def _answer_source_and_page_coverage(
+    answer_markdown: str,
+    selected_chunks: list[RetrievedChunk],
+) -> tuple[int, int]:
+    chunk_by_id = {chunk.embedding.chunk_id: chunk for chunk in selected_chunks}
+    source_keys: set[tuple[str, int, int]] = set()
+    pages: set[int] = set()
+    for match in CHUNK_MARKER_RE.finditer(answer_markdown):
+        chunk = chunk_by_id.get(match.group(1).strip())
+        if not chunk:
+            continue
+        source_keys.add(
+            (
+                chunk.filename,
+                int(chunk.embedding.pdf_page_start),
+                int(chunk.embedding.pdf_page_end),
+            )
+        )
+        pages.add(int(chunk.embedding.pdf_page_start))
+    return len(source_keys), len(pages)
+
+
 def _should_retry_for_precision(question: str, selected_chunks: list[RetrievedChunk], answer_markdown: str) -> bool:
     if not _question_requires_precision(question):
         return False
@@ -170,42 +214,48 @@ def _should_retry_for_precision(question: str, selected_chunks: list[RetrievedCh
     return not _answer_has_number(answer_markdown)
 
 
-def _prioritize_context_chunks(question: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+def _should_retry_for_coverage(question: str, selected_chunks: list[RetrievedChunk], answer_markdown: str) -> bool:
+    if not MULTI_REQUIREMENT_QUESTION_RE.search(_normalize_match_text(question)):
+        return False
+    source_count, page_count = _answer_source_and_page_coverage(answer_markdown, selected_chunks)
+    return source_count <= 1 or page_count <= 1
+
+
+def _chunk_key_rule_bonus(chunk: RetrievedChunk) -> float:
+    text = _normalize_match_text(chunk.embedding.content)
+    matches = 0
+
+    if re.search(r"\d", text):
+        matches += 1
+    if any(unit_term in text for unit_term in KEY_RULE_UNIT_TERMS):
+        matches += 1
+    matches += sum(1 for term in KEY_RULE_ANCHOR_TERMS if term in text)
+
+    return min(KEY_RULE_BONUS_CAP, KEY_RULE_BONUS_PER_MATCH * matches)
+
+
+def _prioritize_context_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
     deduped: list[RetrievedChunk] = []
-    seen_pages: set[tuple[str, int, int]] = set()
+    seen_ranges: set[tuple[str, int, int]] = set()
     for chunk in chunks:
         key = (
-            str(chunk.embedding.document_id),
+            chunk.filename,
             int(chunk.embedding.pdf_page_start),
             int(chunk.embedding.pdf_page_end),
         )
-        if key in seen_pages:
+        if key in seen_ranges:
             continue
-        seen_pages.add(key)
+        seen_ranges.add(key)
         deduped.append(chunk)
 
-    prioritized: list[RetrievedChunk] = []
-    selected_ids: set[str] = set()
+    rescored: list[tuple[int, float, float, RetrievedChunk]] = []
+    for original_rank, chunk in enumerate(deduped):
+        embedding_score = chunk.vector_similarity if chunk.vector_similarity is not None else chunk.combined_score
+        bonus = _chunk_key_rule_bonus(chunk)
+        rescored.append((original_rank, embedding_score + bonus, bonus, chunk))
 
-    def _add(chunk: RetrievedChunk | None) -> None:
-        if chunk is None:
-            return
-        unique_id = str(chunk.embedding.id)
-        if unique_id in selected_ids:
-            return
-        selected_ids.add(unique_id)
-        prioritized.append(chunk)
-
-    # Always include at least one numeric/threshold chunk when available.
-    _add(next((chunk for chunk in deduped if _chunk_has_numeric_evidence(chunk)), None))
-
-    # For procedural questions, include one notification/reporting chunk when available.
-    if _question_suggests_procedural(question):
-        _add(next((chunk for chunk in deduped if _chunk_has_procedural_evidence(chunk)), None))
-
-    for chunk in deduped:
-        _add(chunk)
-    return prioritized
+    rescored.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    return [item[3] for item in rescored]
 
 
 def _convert_chunk_markers_to_numeric(
@@ -293,8 +343,25 @@ def _build_context(
     context_parts: list[str] = []
     consumed_tokens = 0
 
-    prioritized_chunks = _prioritize_context_chunks(question, chunks)
-    for chunk in prioritized_chunks:
+    prioritized_chunks = _prioritize_context_chunks(chunks)
+    ranges_used: set[tuple[str, int, int]] = set()
+    pages_used: dict[int, int] = {}
+    selected_ids: set[str] = set()
+
+    def _try_add_chunk(chunk: RetrievedChunk) -> bool:
+        nonlocal consumed_tokens
+        chunk_id = str(chunk.embedding.id)
+        if chunk_id in selected_ids:
+            return False
+
+        page_start = int(chunk.embedding.pdf_page_start)
+        page_end = int(chunk.embedding.pdf_page_end)
+        range_key = (chunk.filename, page_start, page_end)
+        if range_key in ranges_used:
+            return False
+        if pages_used.get(page_start, 0) >= 2:
+            return False
+
         candidate = (
             f"<chunk id=\"{chunk.embedding.chunk_id}\" "
             f"document_id=\"{chunk.embedding.document_id}\" "
@@ -304,22 +371,33 @@ def _build_context(
             f"</chunk>"
         )
         candidate_tokens = count_tokens(candidate)
-        if context_parts and consumed_tokens + candidate_tokens > max_tokens:
-            continue
+        if consumed_tokens + candidate_tokens > max_tokens:
+            return False
         context_parts.append(candidate)
         selected_chunks.append(chunk)
+        selected_ids.add(chunk_id)
+        ranges_used.add(range_key)
+        pages_used[page_start] = pages_used.get(page_start, 0) + 1
         consumed_tokens += candidate_tokens
+        return True
+
+    # Pass 1: prioritize distinct page coverage until at least 3 pages are represented.
+    for chunk in prioritized_chunks:
+        if len(pages_used) >= 3:
+            break
+        page_start = int(chunk.embedding.pdf_page_start)
+        if page_start in pages_used:
+            continue
+        _try_add_chunk(chunk)
+
+    # Pass 2: fill remaining budget with highest ranked chunks, max 2 chunks/page.
+    for chunk in prioritized_chunks:
+        _try_add_chunk(chunk)
 
     return "\n\n".join(context_parts), selected_chunks, consumed_tokens
 
 
-def _qa_messages(question: str, context_text: str, precision_retry: bool = False) -> list[dict[str, str]]:
-    retry_instruction = ""
-    if precision_retry:
-        retry_instruction = (
-            "\n\nYour previous answer was too vague. Include the exact numeric thresholds/time windows/limits from context."
-        )
-
+def _qa_messages(question: str, context_text: str, retry_instruction: str = "") -> list[dict[str, str]]:
     return [
         {
             "role": "system",
@@ -329,7 +407,9 @@ def _qa_messages(question: str, context_text: str, precision_retry: bool = False
                 "Do not add details that are not explicitly supported by context. "
                 "If context contains numeric thresholds, time windows, limits, or cutoff values, you MUST include them verbatim. "
                 "Prefer directive wording and include units exactly (m³/day, m³/m³, hours, dollars) when present in context. "
-                "If multiple relevant sections exist, include them in separate bullets. "
+                "If multiple distinct requirements appear in context, include them as separate bullets. "
+                "Do NOT collapse multiple timing rules into a single statement. "
+                "Prefer exact thresholds and ranges (include numbers + units verbatim when present). "
                 "If the question asks what is allowed or required, explicitly state the condition(s) and thresholds when present. "
                 "Every factual sentence or bullet line must end with one or more chunk markers exactly like "
                 "[[chunk:<id>]] or [[chunk:<id>]][[chunk:<id>]]. "
@@ -416,13 +496,61 @@ async def answer_question(
     if llm_result is None:
         llm_result = QAResult(found=False, answer_markdown=NOT_FOUND_ANSWER)
 
-    if llm_result.found and _should_retry_for_precision(question, selected_chunks, llm_result.answer_markdown):
-        retry_result = await _run_qa_model(_qa_messages(question, context_text, precision_retry=True), req_id)
-        if retry_result and retry_result.found and _answer_has_number(retry_result.answer_markdown):
-            logger.info("qa_precision_retry_applied request_id=%s", req_id)
-            llm_result = retry_result
-        else:
-            logger.warning("qa_precision_retry_no_improvement request_id=%s", req_id)
+    if llm_result.found:
+        needs_precision_retry = _should_retry_for_precision(question, selected_chunks, llm_result.answer_markdown)
+        needs_coverage_retry = _should_retry_for_coverage(question, selected_chunks, llm_result.answer_markdown)
+        if needs_precision_retry or needs_coverage_retry:
+            retry_reasons: list[str] = []
+            if needs_precision_retry:
+                retry_reasons.append(
+                    "Your previous answer was too vague. Include the exact numeric thresholds/time windows/limits from context."
+                )
+            if needs_coverage_retry:
+                retry_reasons.append(
+                    "Your answer appears incomplete because it relies on a single page. "
+                    "Incorporate all distinct requirements found across the provided context, and cite each bullet."
+                )
+
+            retry_instruction = "\n\n" + "\n".join(retry_reasons)
+            retry_result = await _run_qa_model(
+                _qa_messages(question, context_text, retry_instruction=retry_instruction),
+                req_id,
+            )
+            if retry_result and retry_result.found:
+                old_source_count, old_page_count = _answer_source_and_page_coverage(
+                    llm_result.answer_markdown,
+                    selected_chunks,
+                )
+                new_source_count, new_page_count = _answer_source_and_page_coverage(
+                    retry_result.answer_markdown,
+                    selected_chunks,
+                )
+                old_has_number = _answer_has_number(llm_result.answer_markdown)
+                new_has_number = _answer_has_number(retry_result.answer_markdown)
+                improved_coverage = (
+                    new_source_count > old_source_count or new_page_count > old_page_count
+                )
+                improved_precision = new_has_number and not old_has_number
+
+                if improved_coverage or improved_precision:
+                    logger.info(
+                        "qa_retry_applied request_id=%s improved_coverage=%s improved_precision=%s",
+                        req_id,
+                        improved_coverage,
+                        improved_precision,
+                    )
+                    llm_result = retry_result
+                else:
+                    logger.warning(
+                        "qa_retry_no_improvement request_id=%s old_sources=%s old_pages=%s new_sources=%s new_pages=%s",
+                        req_id,
+                        old_source_count,
+                        old_page_count,
+                        new_source_count,
+                        new_page_count,
+                    )
+            else:
+                logger.warning("qa_retry_failed request_id=%s", req_id)
 
     if not llm_result.found:
         logger.info("qa_complete request_id=%s found=false citations=[]", req_id)
