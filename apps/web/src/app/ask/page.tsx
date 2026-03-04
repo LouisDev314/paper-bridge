@@ -93,21 +93,6 @@ function AskPageContent() {
     setTimeout(() => setCopiedAnswer(false), 2000);
   }
 
-  async function copyMarkdown() {
-    if (!result) return;
-    let md = `**Question**: ${question}\n\n**Answer**: ${result.answer}\n\n### Citations\n`;
-    result.citations.forEach((citation, index) => {
-      const pages =
-        citation.page_start === citation.page_end
-          ? `p. ${citation.page_start}`
-          : `pp. ${citation.page_start}-${citation.page_end}`;
-      md += `\n[${index + 1}] ${citation.filename} (${pages})\n`;
-    });
-    await navigator.clipboard.writeText(md);
-    setCopiedMarkdown(true);
-    setTimeout(() => setCopiedMarkdown(false), 2000);
-  }
-
   return (
     <section className="page-grid">
       <div className="panel">
@@ -200,20 +185,12 @@ function AskPageContent() {
         <div className="panel md:col-span-2">
           <div className="flex items-center justify-between border-b pb-4 mb-4">
             <h2>Answer</h2>
-            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={copyAnswer}
                 className="px-3 py-1.5 text-sm rounded bg-slate-100 hover:bg-slate-200 transition-colors">
                 {copiedAnswer ? 'Copied!' : 'Copy Answer'}
               </button>
-              <button
-                type="button"
-                onClick={copyMarkdown}
-                className="px-3 py-1.5 text-sm rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors">
-                {copiedMarkdown ? 'Copied!' : 'Copy Markdown'}
-              </button>
-            </div>
           </div>
           <div className="prose max-w-none text-slate-800 leading-relaxed whitespace-pre-wrap">{result.answer}</div>
 
