@@ -36,20 +36,15 @@ Production-ready AI document intelligence system for PDFs. PaperBridge lets you 
 
 ```mermaid
 flowchart LR
+  User[User Browser]
 
-User[User Browser]
+  User --> Web[Next.js Frontend<br/>apps/web]
+  Web --> Proxy[/api/pb/* Proxy Route/]
+  Proxy --> API[FastAPI Backend]
 
-User --> Web[Next.js Frontend<br>apps/web]
-
-Web --> Proxy[/api/pb/* Proxy Route/]
-
-Proxy --> API[FastAPI Backend]
-
-API --> DB[(Supabase Postgres<br>documents / pages / jobs / extractions / embeddings)]
-
-API --> Storage[(Supabase Storage<br>PDF + page images)]
-
-API --> OpenAI[OpenAI APIs<br>Extraction / Embeddings / QA]
+  API --> DB[(Supabase Postgres<br/>documents / pages / jobs / extractions / embeddings)]
+  API --> Storage[(Supabase Storage<br/>PDF + page images)]
+  API --> OpenAI[OpenAI APIs<br/>Extraction / Embeddings / QA]
 ```
 
 The frontend calls only `/api/pb/*`, and the proxy route in `apps/web` forwards requests to the FastAPI backend using `NEXT_PUBLIC_API_BASE_URL`.
@@ -60,15 +55,14 @@ The frontend calls only `/api/pb/*`, and the proxy route in `apps/web` forwards 
 
 ```mermaid
 flowchart TD
-
-A[Client uploads PDF<br>/documents or /documents/batch] --> B[Supabase Storage<br>store original PDF]
-B --> C[PDF parsing<br>PyMuPDF + optional vision]
-C --> D[Persist pages<br>documents + document_pages]
-D --> E[Queue pipeline job<br>jobs.task_type = "pipeline"]
-E --> F[Extraction step<br>run_extraction_job → extractions]
-F --> G[Embedding step<br>run_embedding_job → embeddings (pgvector)]
-G --> H[Document status = ready<br>derived from jobs + extractions + embeddings]
-H --> I[Ask /ask<br>hybrid retrieval + grounded QA]
+  A[Client uploads PDF<br/>/documents or /documents/batch] --> B[Supabase Storage<br/>store original PDF]
+  B --> C[PDF parsing<br/>PyMuPDF + optional vision]
+  C --> D[Persist pages<br/>documents + document_pages]
+  D --> E[Queue pipeline job<br/>jobs.task_type = pipeline]
+  E --> F[Extraction step<br/>run_extraction_job → extractions]
+  F --> G[Embedding step<br/>run_embedding_job → embeddings (pgvector)]
+  G --> H[Document status = ready<br/>derived from jobs + extractions + embeddings]
+  H --> I[Ask /ask<br/>hybrid retrieval + grounded QA]
 ```
 
 The pipeline runs inside the API process using background tasks and the `jobs` table, so clients can safely poll `/jobs/{job_id}` until completion.
